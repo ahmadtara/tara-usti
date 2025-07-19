@@ -9,12 +9,12 @@ from sklearn.naive_bayes import GaussianNB
 from sklearn.metrics import accuracy_score, classification_report, confusion_matrix
 
 # === Title ===
-st.title("📊 ML App: C4.5 & Naive Bayes (Auto GitHub Import)")
-st.write("App ini otomatis mengambil dataset dari GitHub (RAW URL), melakukan preprocessing, dan menampilkan hasil model.")
+st.title("📊 ML App: C4.5 & Naive Bayes By. Tara")
+st.write("App ini melakukan preprocessing, dan menampilkan hasil model.")
 
 # === Input URL GitHub ===
-github_url = st.text_input("Masukkan URL RAW file Excel dari GitHub:", 
-    "https://raw.githubusercontent.com/username/repo/main/DATA%20PO%20MY%20REPUBLIC%202024.xlsx")
+github_url = st.text_input("https://github.com/ahmadtara/tara-usti/blob/31647a3f4578de6673be689376026bb24214acca/DATA%20PO%202024.xlsx")
+
 
 if github_url:
     try:
