@@ -29,28 +29,30 @@ if uploaded_file is not None:
     st.subheader("Data Sebelum Pra-pemrosesan")
     st.write(df.head())
 
-    # Hapus baris yang mengandung nilai kosong
+    # Hapus data kosong
     df.dropna(inplace=True)
 
-    # Pastikan semua kolom bertipe string sebelum encoding
+    # Ubah semua kolom jadi string agar bisa di-label encoding
     df = df.astype(str)
 
-    # Label Encoding
-    st.subheader("Pra-pemrosesan Data (Encoding & Scaling)")
+    # Label encoding per kolom
     label = LabelEncoder()
     for col in df.columns:
         df[col] = label.fit_transform(df[col])
 
-    # Scaling
+    # Pisahkan fitur dan label
+    X = df.drop('status_po', axis=1)
+    y = df['status_po']
+
+    # Scaling hanya untuk fitur
     scaler = MinMaxScaler()
-    df_scaled = pd.DataFrame(scaler.fit_transform(df), columns=df.columns)
-    st.write("Data Setelah Scaling")
-    st.write(df_scaled.head())
+    X_scaled = pd.DataFrame(scaler.fit_transform(X), columns=X.columns)
+
+    st.subheader("Fitur Setelah Scaling")
+    st.write(X_scaled.head())
 
     # Split data
-    X = df_scaled.drop('status_po', axis=1)
-    y = df_scaled['status_po']
-    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
+    X_train, X_test, y_train, y_test = train_test_split(X_scaled, y, test_size=0.2, random_state=42)
 
     # Model Decision Tree
     st.subheader("Model Decision Tree")
