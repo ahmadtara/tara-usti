@@ -9,8 +9,6 @@ from sklearn.tree import DecisionTreeClassifier
 from sklearn.naive_bayes import GaussianNB
 from sklearn.metrics import accuracy_score, classification_report, confusion_matrix
 
-st.set_option('deprecation.showPyplotGlobalUse', False)
-
 # === Title ===
 st.title("📊 ML App: EDA + Decision Tree & Naive Bayes")
 st.write("Upload file Excel → Pilih sheet → Lakukan EDA → Preprocessing → Training Model → Evaluasi")
