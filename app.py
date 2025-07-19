@@ -68,13 +68,7 @@ if uploaded_file is not None:
     # Evaluasi akurasi
     acc_dt = accuracy_score(y_test, y_pred_dt)
     acc_nb = accuracy_score(y_test, y_pred_nb)
-    
-     # Diagram batang perbandingan akurasi
-    st.subheader("Diagram Batang Perbandingan Akurasi")
-    fig_bar, ax_bar = plt.subplots()
-    sns.barplot(x="Algoritma", y="Akurasi", data=comparison_df, palette="Set2", ax=ax_bar)
-    ax_bar.set_ylim(0, 1)
-    st.pyplot(fig_bar)
+
     # Tabel perbandingan
     st.subheader("Tabel Perbandingan Akurasi")
     comparison_df = pd.DataFrame({
@@ -83,7 +77,12 @@ if uploaded_file is not None:
     })
     st.table(comparison_df)
 
-   
+    # Diagram batang perbandingan akurasi
+    st.subheader("Diagram Batang Perbandingan Akurasi")
+    fig_bar, ax_bar = plt.subplots()
+    sns.barplot(x="Algoritma", y="Akurasi", data=comparison_df, palette="Set2", ax=ax_bar)
+    ax_bar.set_ylim(0, 1)
+    st.pyplot(fig_bar)
 
     # Matriks dan laporan klasifikasi
     st.subheader("Confusion Matrix & Classification Report")
