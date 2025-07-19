@@ -22,18 +22,26 @@ if uploaded_file is not None:
         'HP Cluster\n(SND Wajib Isi)': 'hp_cluster',
         'Status PO Cluster (SND Wajib Isi)': 'status_po'
     })
+
+    # Ambil kolom yang digunakan
     df = df[['topologi', 'vendor', 'hp_cluster', 'status_po']]
-    st.subheader("Data Setelah Seleksi dan Rename")
+
+    st.subheader("Data Sebelum Pra-pemrosesan")
     st.write(df.head())
 
-    # Label Encoding dan Scaling
-    st.subheader("Pra-pemrosesan Data")
-    label = LabelEncoder()
-    df['topologi'] = label.fit_transform(df['topologi'])
-    df['vendor'] = label.fit_transform(df['vendor'])
-    df['hp_cluster'] = label.fit_transform(df['hp_cluster'])
-    df['status_po'] = label.fit_transform(df['status_po'])
+    # Hapus baris yang mengandung nilai kosong
+    df.dropna(inplace=True)
 
+    # Pastikan semua kolom bertipe string sebelum encoding
+    df = df.astype(str)
+
+    # Label Encoding
+    st.subheader("Pra-pemrosesan Data (Encoding & Scaling)")
+    label = LabelEncoder()
+    for col in df.columns:
+        df[col] = label.fit_transform(df[col])
+
+    # Scaling
     scaler = MinMaxScaler()
     df_scaled = pd.DataFrame(scaler.fit_transform(df), columns=df.columns)
     st.write("Data Setelah Scaling")
@@ -61,4 +69,9 @@ if uploaded_file is not None:
     model_nb = GaussianNB()
     model_nb.fit(X_train, y_train)
     y_pred_nb = model_nb.predict(X_test)
-    acc_nb =_
+    acc_nb = accuracy_score(y_test, y_pred_nb)
+    st.write("Akurasi:", acc_nb)
+    st.text("Confusion Matrix:")
+    st.write(confusion_matrix(y_test, y_pred_nb))
+    st.text("Classification Report:")
+    st.text(classification_report(y_test, y_pred_nb))
