@@ -4,7 +4,7 @@ import numpy as np
 import seaborn as sns
 import matplotlib.pyplot as plt
 from sklearn.model_selection import train_test_split
-from sklearn.preprocessing import LabelEncoder, MinMaxScaler
+from sklearn.preprocessing import LabelEncoder
 from sklearn.tree import DecisionTreeClassifier
 from sklearn.naive_bayes import GaussianNB
 from sklearn.metrics import accuracy_score, classification_report, confusion_matrix
@@ -30,6 +30,13 @@ if uploaded_file is not None:
     df = df[['topologi', 'vendor', 'hp_cluster', 'status_po']]
     st.subheader("Data yang Digunakan")
     st.write(df.head())
+
+    # Bersihkan dan ubah tipe data
+    df = df.fillna("Unknown")
+    df['topologi'] = df['topologi'].astype(str)
+    df['vendor'] = df['vendor'].astype(str)
+    df['hp_cluster'] = df['hp_cluster'].astype(str)
+    df['status_po'] = df['status_po'].astype(str)
 
     # Encoding
     le_topologi = LabelEncoder()
