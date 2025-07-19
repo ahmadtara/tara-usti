@@ -2,6 +2,7 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
+import seaborn as sns
 from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import LabelEncoder, label_binarize
 from sklearn.tree import DecisionTreeClassifier
@@ -12,7 +13,7 @@ from sklearn.metrics import (
     roc_curve, auc
 )
 
-st.title("Perbandingan Algoritma: Decision Tree vs Naive Bayes")
+st.title("Analisis Perbandingan Algoritma: C4.5 vs Naive Bayes Untuk Memprediksi Ketercapaian Target Po Dalam Membangun Project Ftth (Fiber To The Home)")
 
 uploaded_file = st.file_uploader("Upload file Excel", type=["xlsx"])
 
@@ -26,14 +27,28 @@ if uploaded_file is not None:
     df = df_raw.rename(columns={
         'Topology': 'topologi',
         'Vendor': 'vendor',
-        'HP Cluster\n(SND Wajib Isi)': 'hp_cluster',
+        'HP Cluster\\n(SND Wajib Isi)': 'hp_cluster',
         'Status PO Cluster (SND Wajib Isi)': 'status_po'
     })[['topologi', 'vendor', 'hp_cluster', 'status_po']]
 
-    # Bersihkan dan ubah tipe data
     df = df.fillna("Unknown")
     for col in df.columns:
         df[col] = df[col].astype(str)
+
+    # Visualisasi Distribusi
+    st.subheader("Distribusi Kelas Target (status_po)")
+    fig_dist, ax_dist = plt.subplots()
+    df['status_po'].value_counts().plot(kind='bar', ax=ax_dist, color='salmon')
+    ax_dist.set_xlabel("Label")
+    ax_dist.set_ylabel("Jumlah")
+    st.pyplot(fig_dist)
+
+    st.subheader("Distribusi Fitur Kategorikal")
+    for col in ['topologi', 'vendor', 'hp_cluster']:
+        fig_cat, ax_cat = plt.subplots()
+        df[col].value_counts().plot(kind='bar', ax=ax_cat)
+        ax_cat.set_title(f"Distribusi: {col}")
+        st.pyplot(fig_cat)
 
     # Label Encoding
     le_topologi = LabelEncoder()
@@ -46,6 +61,13 @@ if uploaded_file is not None:
     df['hp_cluster'] = le_hp_cluster.fit_transform(df['hp_cluster'])
     df['status_po'] = le_status_po.fit_transform(df['status_po'])
 
+    # Heatmap Korelasi
+    st.subheader("Heatmap Korelasi Fitur")
+    fig_corr, ax_corr = plt.subplots()
+    sns.heatmap(df.corr(), annot=True, cmap="coolwarm", ax=ax_corr)
+    st.pyplot(fig_corr)
+
+    # Modeling dan Evaluasi
     X = df.drop('status_po', axis=1)
     y = df['status_po']
     results = []
@@ -72,12 +94,12 @@ if uploaded_file is not None:
                 "F1 Score": f1_score(y_test, y_pred, average='macro', zero_division=0)
             })
 
-    # Tampilkan Tabel Evaluasi
+    # Tabel Evaluasi
     st.subheader("Tabel Evaluasi Akurasi, Presisi, Recall, F1")
     result_df = pd.DataFrame(results)
     st.dataframe(result_df)
 
-    # Grafik Akurasi
+    # Grafik Perbandingan Akurasi
     st.subheader("Grafik Perbandingan Akurasi")
     fig, ax = plt.subplots()
     for model in result_df['Model'].unique():
@@ -89,7 +111,7 @@ if uploaded_file is not None:
     ax.legend()
     st.pyplot(fig)
 
-    # ROC Curve (Split 80:20)
+    # ROC Curve dengan Split 80:20
     st.subheader("ROC Curve (Split 80:20)")
     X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
     y_bin = label_binarize(y_test, classes=np.unique(y))
