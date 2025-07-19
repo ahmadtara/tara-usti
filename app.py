@@ -9,8 +9,6 @@ from sklearn.tree import DecisionTreeClassifier
 from sklearn.naive_bayes import GaussianNB
 from sklearn.metrics import accuracy_score, classification_report, confusion_matrix
 
-st.set_option('deprecation.showPyplotGlobalUse', False)
-
 st.title("Analisis Klasifikasi Data Site Cluster")
 
 uploaded_file = st.file_uploader("Upload file Excel", type=["xlsx"])
@@ -63,9 +61,4 @@ if uploaded_file is not None:
     model_nb = GaussianNB()
     model_nb.fit(X_train, y_train)
     y_pred_nb = model_nb.predict(X_test)
-    acc_nb = accuracy_score(y_test, y_pred_nb)
-    st.write("Akurasi:", acc_nb)
-    st.text("Confusion Matrix:")
-    st.write(confusion_matrix(y_test, y_pred_nb))
-    st.text("Classification Report:")
-    st.text(classification_report(y_test, y_pred_nb))
+    acc_nb =_
