@@ -10,14 +10,19 @@ from sklearn.metrics import accuracy_score, classification_report, confusion_mat
 
 # === Title ===
 st.title("📊 ML App: C4.5 & Naive Bayes By. Tara")
-st.write("App ini melakukan preprocessing, dan menampilkan hasil model.")
+st.write("App ini mengambil data dari GitHub RAW URL, melakukan preprocessing, dan menampilkan hasil model.")
 
-# === Input URL GitHub ===
-github_url = st.text_input("https://github.com/ahmadtara/tara-usti/blob/31647a3f4578de6673be689376026bb24214acca/DATA%20PO%202024.xlsx")
-
+# === Input URL RAW GitHub ===
+default_url = "https://raw.githubusercontent.com/ahmadtara/tara-usti/main/DATA%20PO%202024.xlsx"
+github_url = st.text_input("Masukkan URL RAW file Excel:", default_url)
 
 if github_url:
     try:
+        if not github_url.startswith("https://raw.githubusercontent.com"):
+            st.error("URL harus berupa RAW link dari GitHub!")
+            st.stop()
+
+        # Baca Excel dari RAW URL
         xls = pd.ExcelFile(github_url)
         sheet_names = xls.sheet_names
         selected_sheet = st.selectbox("Pilih Sheet:", sheet_names)
@@ -31,13 +36,12 @@ if github_url:
         # Pilih kolom target
         target_col = st.selectbox("Pilih kolom target:", df.columns)
 
-        # Bersihkan data (hapus baris NaN di target)
+        # Bersihkan data
         df = df.dropna(subset=[target_col])
         if df.shape[0] == 0:
             st.error("Dataset kosong setelah menghapus nilai NaN di target.")
             st.stop()
 
-        # Pisahkan fitur dan target
         X = df.drop(columns=[target_col])
         y = df[target_col]
 
@@ -45,9 +49,8 @@ if github_url:
         le = LabelEncoder()
         y = le.fit_transform(y)
 
-        # One-hot encoding fitur kategorikal
+        # One-hot encoding
         X_encoded = pd.get_dummies(X).apply(pd.to_numeric, errors='coerce').fillna(0)
-
         if X_encoded.shape[1] == 0:
             st.error("Tidak ada fitur yang valid untuk model.")
             st.stop()
@@ -64,9 +67,7 @@ if github_url:
         c45 = DecisionTreeClassifier(criterion="entropy", random_state=42)
         c45.fit(X_train, y_train)
         y_pred_c45 = c45.predict(X_test)
-
         st.write(f"**Akurasi C4.5:** {accuracy_score(y_test, y_pred_c45):.2f}")
-        st.text("Classification Report (C4.5):")
         st.text(classification_report(y_test, y_pred_c45))
 
         cm_c45 = confusion_matrix(y_test, y_pred_c45)
@@ -80,9 +81,7 @@ if github_url:
         nb = GaussianNB()
         nb.fit(X_train, y_train)
         y_pred_nb = nb.predict(X_test)
-
         st.write(f"**Akurasi Naive Bayes:** {accuracy_score(y_test, y_pred_nb):.2f}")
-        st.text("Classification Report (Naive Bayes):")
         st.text(classification_report(y_test, y_pred_nb))
 
         cm_nb = confusion_matrix(y_test, y_pred_nb)
