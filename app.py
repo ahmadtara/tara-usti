@@ -9,63 +9,78 @@ from sklearn.tree import DecisionTreeClassifier
 from sklearn.naive_bayes import GaussianNB
 from sklearn.metrics import accuracy_score, classification_report, confusion_matrix
 
-# === Streamlit UI ===
-st.title("ML App: EDA + Decision Tree & Naive Bayes")
-st.write("Upload file Excel, lakukan preprocessing, training model, dan lihat hasil visualisasi.")
+st.set_option('deprecation.showPyplotGlobalUse', False)
+
+# === Title ===
+st.title("📊 ML App: EDA + Decision Tree & Naive Bayes")
+st.write("Upload file Excel → Pilih sheet → Lakukan EDA → Preprocessing → Training Model → Evaluasi")
 
 # === Upload File ===
-uploaded_file = st.file_uploader("Upload file Excel", type=["xlsx"])
+uploaded_file = st.file_uploader("Upload file Excel (.xlsx)", type=["xlsx"])
+
 if uploaded_file is not None:
+    # Pilih sheet
+    xls = pd.ExcelFile(uploaded_file)
+    sheet_names = xls.sheet_names
+    selected_sheet = st.selectbox("Pilih Sheet:", sheet_names)
+    
     # Baca data
-    df = pd.read_excel(uploaded_file)
+    df = pd.read_excel(uploaded_file, sheet_name=selected_sheet)
+    df = df.dropna()  # Drop baris kosong
     st.subheader("Preview Data")
     st.write(df.head())
 
+    st.write(f"**Jumlah Data:** {df.shape[0]} baris, {df.shape[1]} kolom")
+
     # === EDA ===
-    st.subheader("Exploratory Data Analysis")
-    st.write("**Shape Data:**", df.shape)
-    st.write("**Info:**")
-    st.write(df.describe())
+    st.subheader("📈 Exploratory Data Analysis")
 
-    # Heatmap korelasi
-    st.write("### Korelasi Heatmap")
-    fig, ax = plt.subplots()
-    sns.heatmap(df.corr(numeric_only=True), annot=True, cmap="coolwarm", ax=ax)
-    st.pyplot(fig)
+    st.write("### Statistik Deskriptif")
+    st.write(df.describe(include="all"))
 
-    # Distribusi kolom
+    # Korelasi
     numeric_cols = df.select_dtypes(include=np.number).columns
+    if len(numeric_cols) > 1:
+        st.write("### Korelasi Heatmap")
+        corr = df[numeric_cols].corr()
+        fig, ax = plt.subplots(figsize=(8, 5))
+        sns.heatmap(corr, annot=True, cmap="coolwarm", ax=ax)
+        st.pyplot(fig)
+    else:
+        st.warning("Tidak cukup kolom numerik untuk korelasi.")
+
+    # Distribusi
     if len(numeric_cols) > 0:
         col = st.selectbox("Pilih kolom untuk distribusi:", numeric_cols)
         fig2, ax2 = plt.subplots()
-        sns.histplot(df[col], kde=True, ax=ax2)
+        sns.histplot(df[col].dropna(), kde=True, ax=ax2)
         st.pyplot(fig2)
 
     # === Preprocessing ===
-    st.subheader("Preprocessing Data")
+    st.subheader("⚙️ Preprocessing Data")
     target_col = st.selectbox("Pilih kolom target:", df.columns)
     X = df.drop(columns=[target_col])
     y = df[target_col]
 
-    # Label Encoding untuk target
+    # Label Encoding target
     le = LabelEncoder()
     y = le.fit_transform(y)
 
-    # Handling categorical di X
+    # One-hot encoding fitur kategorikal
     X_encoded = pd.get_dummies(X)
 
     # Scaling
     scaler = MinMaxScaler()
     X_scaled = scaler.fit_transform(X_encoded)
 
-    # Train-Test Split
+    # Split data
     X_train, X_test, y_train, y_test = train_test_split(X_scaled, y, test_size=0.2, random_state=42)
 
     # === Training Models ===
-    st.subheader("Training Models")
+    st.subheader("🤖 Training Models")
 
     # Decision Tree
-    dt = DecisionTreeClassifier()
+    dt = DecisionTreeClassifier(random_state=42)
     dt.fit(X_train, y_train)
     y_pred_dt = dt.predict(X_test)
 
@@ -75,9 +90,11 @@ if uploaded_file is not None:
     y_pred_nb = nb.predict(X_test)
 
     # === Evaluation ===
+    st.subheader("📊 Evaluasi Model")
+
     st.write("### Akurasi:")
-    st.write(f"Decision Tree: {accuracy_score(y_test, y_pred_dt):.2f}")
-    st.write(f"Naive Bayes: {accuracy_score(y_test, y_pred_nb):.2f}")
+    st.write(f"**Decision Tree:** {accuracy_score(y_test, y_pred_dt):.2f}")
+    st.write(f"**Naive Bayes:** {accuracy_score(y_test, y_pred_nb):.2f}")
 
     # Classification Report
     st.write("### Classification Report (Decision Tree)")
