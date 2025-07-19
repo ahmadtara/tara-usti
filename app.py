@@ -9,93 +9,66 @@ from sklearn.tree import DecisionTreeClassifier
 from sklearn.naive_bayes import GaussianNB
 from sklearn.metrics import accuracy_score, classification_report, confusion_matrix
 
-# === Title ===
-st.title("📊 ML App: C4.5 & Naive Bayes")
-st.write("Upload file Excel → Pilih sheet → Preprocessing → Training → Evaluasi")
+st.title("Klasifikasi Data: Decision Tree vs Naive Bayes")
 
-# === Upload File ===
-uploaded_file = st.file_uploader("Upload file Excel (.xlsx)", type=["xlsx"])
+uploaded_file = st.file_uploader("Upload file Excel", type=["xlsx"])
 
 if uploaded_file is not None:
-    try:
-        # Pilih sheet
-        xls = pd.ExcelFile(uploaded_file)
-        sheet_names = xls.sheet_names
-        selected_sheet = st.selectbox("Pilih Sheet:", sheet_names)
+    xls = pd.ExcelFile(uploaded_file)
+    df_raw = xls.parse('Sheet1')
+    st.subheader("Data Awal")
+    st.write(df_raw.head())
 
-        # Baca data
-        df = pd.read_excel(uploaded_file, sheet_name=selected_sheet)
-        st.subheader("Preview Data")
-        st.write(df.head())
+    # Rename kolom
+    df = df_raw.rename(columns={
+        'Topology': 'topologi',
+        'Vendor': 'vendor',
+        'HP Cluster\n(SND Wajib Isi)': 'hp_cluster',
+        'Status PO Cluster (SND Wajib Isi)': 'status_po'
+    })
 
-        st.write(f"**Jumlah Data:** {df.shape[0]} baris, {df.shape[1]} kolom")
+    df = df[['topologi', 'vendor', 'hp_cluster', 'status_po']]
+    st.subheader("Data yang Digunakan")
+    st.write(df.head())
 
-        # Pilih kolom target
-        target_col = st.selectbox("Pilih kolom target:", df.columns)
+    # Encoding
+    le_topologi = LabelEncoder()
+    le_vendor = LabelEncoder()
+    le_hp_cluster = LabelEncoder()
+    le_status_po = LabelEncoder()
 
-        # Hapus baris NaN hanya pada target
-        df = df.dropna(subset=[target_col])
-        if df.shape[0] == 0:
-            st.error("Dataset kosong setelah menghapus nilai NaN di target.")
-            st.stop()
+    df['topologi'] = le_topologi.fit_transform(df['topologi'])
+    df['vendor'] = le_vendor.fit_transform(df['vendor'])
+    df['hp_cluster'] = le_hp_cluster.fit_transform(df['hp_cluster'])
+    df['status_po'] = le_status_po.fit_transform(df['status_po'])
 
-        X = df.drop(columns=[target_col])
-        y = df[target_col]
+    # Split
+    X = df.drop('status_po', axis=1)
+    y = df['status_po']
+    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
 
-        # Label Encoding target
-        le = LabelEncoder()
-        y = le.fit_transform(y)
+    # Modeling
+    dt = DecisionTreeClassifier()
+    dt.fit(X_train, y_train)
+    y_pred_dt = dt.predict(X_test)
 
-        # One-hot encoding fitur kategorikal
-        X_encoded = pd.get_dummies(X).apply(pd.to_numeric, errors='coerce').fillna(0)
+    nb = GaussianNB()
+    nb.fit(X_train, y_train)
+    y_pred_nb = nb.predict(X_test)
 
-        # Validasi fitur
-        if X_encoded.shape[1] == 0:
-            st.error("Tidak ada fitur yang valid untuk model.")
-            st.stop()
+    # Evaluation
+    st.subheader("Akurasi")
+    st.write("Decision Tree Accuracy:", accuracy_score(y_test, y_pred_dt))
+    st.write("Naive Bayes Accuracy:", accuracy_score(y_test, y_pred_nb))
 
-        # Scaling
-        scaler = MinMaxScaler()
-        X_scaled = scaler.fit_transform(X_encoded)
+    st.subheader("Confusion Matrix: Decision Tree")
+    st.write(confusion_matrix(y_test, y_pred_dt))
 
-        # Split data
-        X_train, X_test, y_train, y_test = train_test_split(X_scaled, y, test_size=0.2, random_state=42)
+    st.subheader("Confusion Matrix: Naive Bayes")
+    st.write(confusion_matrix(y_test, y_pred_nb))
 
-        # === Training C4.5 (Decision Tree dengan criterion="entropy") ===
-        st.subheader("🌳 Model C4.5 (Decision Tree)")
-        c45 = DecisionTreeClassifier(criterion="entropy", random_state=42)
-        c45.fit(X_train, y_train)
-        y_pred_c45 = c45.predict(X_test)
+    st.subheader("Classification Report: Decision Tree")
+    st.text(classification_report(y_test, y_pred_dt))
 
-        acc_c45 = accuracy_score(y_test, y_pred_c45)
-        st.write(f"**Akurasi C4.5:** {acc_c45:.2f}")
-        st.text("Classification Report (C4.5):")
-        st.text(classification_report(y_test, y_pred_c45))
-
-        cm_c45 = confusion_matrix(y_test, y_pred_c45)
-        fig1, ax1 = plt.subplots()
-        sns.heatmap(cm_c45, annot=True, fmt="d", cmap="Blues", ax=ax1)
-        ax1.set_title("Confusion Matrix - C4.5")
-        st.pyplot(fig1)
-
-        # === Training Naive Bayes ===
-        st.subheader("🤖 Model Naive Bayes")
-        nb = GaussianNB()
-        nb.fit(X_train, y_train)
-        y_pred_nb = nb.predict(X_test)
-
-        acc_nb = accuracy_score(y_test, y_pred_nb)
-        st.write(f"**Akurasi Naive Bayes:** {acc_nb:.2f}")
-        st.text("Classification Report (Naive Bayes):")
-        st.text(classification_report(y_test, y_pred_nb))
-
-        cm_nb = confusion_matrix(y_test, y_pred_nb)
-        fig2, ax2 = plt.subplots()
-        sns.heatmap(cm_nb, annot=True, fmt="d", cmap="Greens", ax=ax2)
-        ax2.set_title("Confusion Matrix - Naive Bayes")
-        st.pyplot(fig2)
-
-    except Exception as e:
-        st.error(f"Terjadi kesalahan: {e}")
-else:
-    st.info("Silakan upload file Excel terlebih dahulu.")
+    st.subheader("Classification Report: Naive Bayes")
+    st.text(classification_report(y_test, y_pred_nb))
