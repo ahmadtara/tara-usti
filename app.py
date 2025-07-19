@@ -1,5 +1,6 @@
 import streamlit as st
 import pandas as pd
+import numpy as np
 import seaborn as sns
 import matplotlib.pyplot as plt
 from sklearn.model_selection import train_test_split
@@ -9,34 +10,30 @@ from sklearn.naive_bayes import GaussianNB
 from sklearn.metrics import accuracy_score, classification_report, confusion_matrix
 
 # === Title ===
-st.title("📊 ML App: C4.5 & Naive Bayes By. Tara")
-st.write("App ini mengambil data dari GitHub RAW URL, melakukan preprocessing, dan menampilkan hasil model.")
+st.title("📊 ML App: C4.5 & Naive Bayes")
+st.write("Upload file Excel → Pilih sheet → Preprocessing → Training → Evaluasi")
 
-# === Input URL RAW GitHub ===
-default_url = "https://raw.githubusercontent.com/ahmadtara/tara-usti/main/DATA%20PO%202024.xlsx"
-github_url = st.text_input("Masukkan URL RAW file Excel:", default_url)
+# === Upload File ===
+uploaded_file = st.file_uploader("Upload file Excel (.xlsx)", type=["xlsx"])
 
-if github_url:
+if uploaded_file is not None:
     try:
-        if not github_url.startswith("https://raw.githubusercontent.com"):
-            st.error("URL harus berupa RAW link dari GitHub!")
-            st.stop()
-
-        # Baca Excel dari RAW URL
-        xls = pd.ExcelFile(github_url)
+        # Pilih sheet
+        xls = pd.ExcelFile(uploaded_file)
         sheet_names = xls.sheet_names
         selected_sheet = st.selectbox("Pilih Sheet:", sheet_names)
 
         # Baca data
-        df = pd.read_excel(xls, sheet_name=selected_sheet)
+        df = pd.read_excel(uploaded_file, sheet_name=selected_sheet)
         st.subheader("Preview Data")
         st.write(df.head())
+
         st.write(f"**Jumlah Data:** {df.shape[0]} baris, {df.shape[1]} kolom")
 
         # Pilih kolom target
         target_col = st.selectbox("Pilih kolom target:", df.columns)
 
-        # Bersihkan data
+        # Hapus baris NaN hanya pada target
         df = df.dropna(subset=[target_col])
         if df.shape[0] == 0:
             st.error("Dataset kosong setelah menghapus nilai NaN di target.")
@@ -49,8 +46,10 @@ if github_url:
         le = LabelEncoder()
         y = le.fit_transform(y)
 
-        # One-hot encoding
+        # One-hot encoding fitur kategorikal
         X_encoded = pd.get_dummies(X).apply(pd.to_numeric, errors='coerce').fillna(0)
+
+        # Validasi fitur
         if X_encoded.shape[1] == 0:
             st.error("Tidak ada fitur yang valid untuk model.")
             st.stop()
@@ -62,12 +61,15 @@ if github_url:
         # Split data
         X_train, X_test, y_train, y_test = train_test_split(X_scaled, y, test_size=0.2, random_state=42)
 
-        # === Model C4.5 ===
+        # === Training C4.5 (Decision Tree dengan criterion="entropy") ===
         st.subheader("🌳 Model C4.5 (Decision Tree)")
         c45 = DecisionTreeClassifier(criterion="entropy", random_state=42)
         c45.fit(X_train, y_train)
         y_pred_c45 = c45.predict(X_test)
-        st.write(f"**Akurasi C4.5:** {accuracy_score(y_test, y_pred_c45):.2f}")
+
+        acc_c45 = accuracy_score(y_test, y_pred_c45)
+        st.write(f"**Akurasi C4.5:** {acc_c45:.2f}")
+        st.text("Classification Report (C4.5):")
         st.text(classification_report(y_test, y_pred_c45))
 
         cm_c45 = confusion_matrix(y_test, y_pred_c45)
@@ -76,12 +78,15 @@ if github_url:
         ax1.set_title("Confusion Matrix - C4.5")
         st.pyplot(fig1)
 
-        # === Model Naive Bayes ===
+        # === Training Naive Bayes ===
         st.subheader("🤖 Model Naive Bayes")
         nb = GaussianNB()
         nb.fit(X_train, y_train)
         y_pred_nb = nb.predict(X_test)
-        st.write(f"**Akurasi Naive Bayes:** {accuracy_score(y_test, y_pred_nb):.2f}")
+
+        acc_nb = accuracy_score(y_test, y_pred_nb)
+        st.write(f"**Akurasi Naive Bayes:** {acc_nb:.2f}")
+        st.text("Classification Report (Naive Bayes):")
         st.text(classification_report(y_test, y_pred_nb))
 
         cm_nb = confusion_matrix(y_test, y_pred_nb)
@@ -92,3 +97,5 @@ if github_url:
 
     except Exception as e:
         st.error(f"Terjadi kesalahan: {e}")
+else:
+    st.info("Silakan upload file Excel terlebih dahulu.")
