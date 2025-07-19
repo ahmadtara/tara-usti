@@ -25,7 +25,6 @@ if uploaded_file is not None:
         
         # Baca data
         df = pd.read_excel(uploaded_file, sheet_name=selected_sheet)
-        df = df.dropna()  # Drop baris kosong
         st.subheader("Preview Data")
         st.write(df.head())
 
@@ -33,7 +32,6 @@ if uploaded_file is not None:
 
         # === EDA ===
         st.subheader("📈 Exploratory Data Analysis")
-
         st.write("### Statistik Deskriptif")
         st.write(df.describe(include="all"))
 
@@ -58,6 +56,17 @@ if uploaded_file is not None:
         # === Preprocessing ===
         st.subheader("⚙️ Preprocessing Data")
         target_col = st.selectbox("Pilih kolom target:", df.columns)
+
+        # Hapus hanya baris yang targetnya kosong
+        if df.isnull().values.any():
+            st.warning("Dataset mengandung nilai kosong. Baris dengan target kosong akan dihapus.")
+        df = df.dropna(subset=[target_col])
+
+        # Jika dataset kosong, hentikan proses
+        if df.shape[0] == 0:
+            st.error("Dataset kosong setelah menghapus nilai NaN di target. Periksa data Anda!")
+            st.stop()
+
         X = df.drop(columns=[target_col])
         y = df[target_col]
 
@@ -70,6 +79,11 @@ if uploaded_file is not None:
 
         # Pastikan semua numeric + isi NaN dengan 0
         X_encoded = X_encoded.apply(pd.to_numeric, errors='coerce').fillna(0)
+
+        # Jika tidak ada fitur, hentikan proses
+        if X_encoded.shape[1] == 0 or X_encoded.shape[0] == 0:
+            st.error("Dataset tidak valid untuk training (tidak ada fitur atau data kosong).")
+            st.stop()
 
         # Scaling
         scaler = MinMaxScaler()
