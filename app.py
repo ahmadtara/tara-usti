@@ -63,11 +63,34 @@ if uploaded_file is not None:
     nb.fit(X_train, y_train)
     y_pred_nb = nb.predict(X_test)
 
-    # Evaluation
-    st.subheader("Akurasi")
-    st.write("Decision Tree Accuracy:", accuracy_score(y_test, y_pred_dt))
-    st.write("Naive Bayes Accuracy:", accuracy_score(y_test, y_pred_nb))
+    acc_dt = accuracy_score(y_test, y_pred_dt)
+    acc_nb = accuracy_score(y_test, y_pred_nb)
 
+    # Tampilkan Akurasi
+    st.subheader("Akurasi Model")
+    st.write("Decision Tree Accuracy:", acc_dt)
+    st.write("Naive Bayes Accuracy:", acc_nb)
+
+    # Tabel Perbandingan Akurasi
+    st.subheader("Tabel Perbandingan Akurasi")
+    acc_df = pd.DataFrame({
+        "Model": ["Decision Tree", "Naive Bayes"],
+        "Akurasi": [acc_dt, acc_nb]
+    })
+    st.dataframe(acc_df)
+
+    # Grafik Perbandingan Akurasi
+    st.subheader("Grafik Perbandingan Akurasi")
+    fig, ax = plt.subplots()
+    ax.bar(acc_df["Model"], acc_df["Akurasi"], color=["skyblue", "lightgreen"])
+    ax.set_ylim(0, 1)
+    ax.set_ylabel("Akurasi")
+    ax.set_title("Perbandingan Akurasi Model")
+    for i, v in enumerate(acc_df["Akurasi"]):
+        ax.text(i, v + 0.01, f"{v:.2f}", ha='center', fontweight='bold')
+    st.pyplot(fig)
+
+    # Confusion Matrix dan Classification Report
     st.subheader("Confusion Matrix: Decision Tree")
     st.write(confusion_matrix(y_test, y_pred_dt))
 
