@@ -7,14 +7,18 @@ from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import LabelEncoder
 from sklearn.tree import DecisionTreeClassifier
 from sklearn.naive_bayes import GaussianNB
-from sklearn.metrics import accuracy_score, classification_report, confusion_matrix, roc_curve, auc
-from sklearn.preprocessing import label_binarize
+from sklearn.metrics import (
+    accuracy_score, classification_report, confusion_matrix,
+    roc_curve, auc
+)
 
-st.set_option('deprecation.showPyplotGlobalUse', False)
-
-st.title("Analisis Perbandingan Algoritma: C4.5 vs Naive Bayes Untuk Memprediksi Ketercapaian Target Po Dalam Membangun Project FTTH")
+st.title("Analisis Perbandingan Algoritma: C4.5 vs Naive Bayes Untuk Memprediksi Ketercapaian Target Po Dalam Membangun Project Ftth (Fiber To The Home)")
 
 uploaded_file = st.file_uploader("Upload file Excel", type=["xlsx"])
+
+# Pilihan split data
+split_option = st.selectbox("Pilih rasio data latih vs uji", ("70:30", "80:20", "90:10"))
+split_ratio = {"70:30": 0.3, "80:20": 0.2, "90:10": 0.1}[split_option]
 
 if uploaded_file is not None:
     xls = pd.ExcelFile(uploaded_file)
@@ -22,7 +26,6 @@ if uploaded_file is not None:
     st.subheader("Data Awal")
     st.write(df_raw.head())
 
-    # Rename kolom
     df = df_raw.rename(columns={
         'Topology': 'topologi',
         'Vendor': 'vendor',
@@ -34,33 +37,32 @@ if uploaded_file is not None:
     st.subheader("Data yang Digunakan")
     st.write(df.head())
 
-    # Bersihkan dan ubah tipe data
     df = df.fillna("Unknown")
     for col in df.columns:
         df[col] = df[col].astype(str)
 
     # Encoding
-    label_encoders = {}
-    for col in df.columns:
-        le = LabelEncoder()
-        df[col] = le.fit_transform(df[col])
-        label_encoders[col] = le
+    encoders = {col: LabelEncoder() for col in df.columns}
+    for col, encoder in encoders.items():
+        df[col] = encoder.fit_transform(df[col])
 
-    # Visualisasi Heatmap
-    st.subheader("Heatmap Korelasi Fitur")
+    # Visualisasi distribusi data
+    st.subheader("Distribusi Setiap Fitur")
+    for col in df.columns:
+        fig, ax = plt.subplots()
+        sns.histplot(df[col], kde=True, ax=ax)
+        st.pyplot(fig)
+
+    # Heatmap korelasi
+    st.subheader("Heatmap Korelasi")
     fig, ax = plt.subplots()
-    sns.heatmap(df.corr(), annot=True, cmap='coolwarm', ax=ax)
+    sns.heatmap(df.corr(), annot=True, cmap="coolwarm", ax=ax)
     st.pyplot(fig)
 
-    # Split Ratio Option
-    st.subheader("Pilih Rasio Split Data")
-    split_option = st.selectbox("Rasio Split Data", ("70:30", "80:20", "90:10"))
-    test_size = {"70:30": 0.3, "80:20": 0.2, "90:10": 0.1}[split_option]
-
-    # Split
+    # Split data
     X = df.drop('status_po', axis=1)
     y = df['status_po']
-    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=test_size, random_state=42)
+    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=split_ratio, random_state=42)
 
     # Modeling
     dt = DecisionTreeClassifier()
@@ -73,8 +75,8 @@ if uploaded_file is not None:
 
     # Evaluation
     st.subheader("Akurasi")
-    st.write(f"Decision Tree Accuracy ({split_option}):", accuracy_score(y_test, y_pred_dt))
-    st.write(f"Naive Bayes Accuracy ({split_option}):", accuracy_score(y_test, y_pred_nb))
+    st.write("Decision Tree Accuracy:", accuracy_score(y_test, y_pred_dt))
+    st.write("Naive Bayes Accuracy:", accuracy_score(y_test, y_pred_nb))
 
     st.subheader("Confusion Matrix: Decision Tree")
     st.write(confusion_matrix(y_test, y_pred_dt))
@@ -88,29 +90,22 @@ if uploaded_file is not None:
     st.subheader("Classification Report: Naive Bayes")
     st.text(classification_report(y_test, y_pred_nb))
 
-    # ROC Curve (untuk klasifikasi biner saja)
+    # ROC Curve
     if len(np.unique(y)) == 2:
         st.subheader("ROC Curve")
-
-        y_test_bin = label_binarize(y_test, classes=[0, 1]).ravel()
-
-        y_score_dt = dt.predict_proba(X_test)[:, 1]
-        y_score_nb = nb.predict_proba(X_test)[:, 1]
-
-        fpr_dt, tpr_dt, _ = roc_curve(y_test_bin, y_score_dt)
-        fpr_nb, tpr_nb, _ = roc_curve(y_test_bin, y_score_nb)
-
+        fpr_dt, tpr_dt, _ = roc_curve(y_test, dt.predict_proba(X_test)[:, 1])
+        fpr_nb, tpr_nb, _ = roc_curve(y_test, nb.predict_proba(X_test)[:, 1])
         auc_dt = auc(fpr_dt, tpr_dt)
         auc_nb = auc(fpr_nb, tpr_nb)
 
-        fig_roc, ax = plt.subplots()
-        ax.plot(fpr_dt, tpr_dt, label=f"Decision Tree (AUC = {auc_dt:.2f})")
-        ax.plot(fpr_nb, tpr_nb, label=f"Naive Bayes (AUC = {auc_nb:.2f})")
+        fig, ax = plt.subplots()
+        ax.plot(fpr_dt, tpr_dt, label=f'Decision Tree (AUC = {auc_dt:.2f})')
+        ax.plot(fpr_nb, tpr_nb, label=f'Naive Bayes (AUC = {auc_nb:.2f})')
         ax.plot([0, 1], [0, 1], 'k--')
-        ax.set_xlabel("False Positive Rate")
-        ax.set_ylabel("True Positive Rate")
-        ax.set_title("ROC Curve")
-        ax.legend(loc="lower right")
-        st.pyplot(fig_roc)
+        ax.set_xlabel('False Positive Rate')
+        ax.set_ylabel('True Positive Rate')
+        ax.set_title('ROC Curve')
+        ax.legend()
+        st.pyplot(fig)
     else:
-        st.warning("ROC Curve hanya dapat ditampilkan jika label hanya terdiri dari 2 kelas (biner).")
+        st.info("ROC Curve hanya tersedia untuk data klasifikasi biner.")
