@@ -1,15 +1,18 @@
 import streamlit as st
 import pandas as pd
 import numpy as np
-import seaborn as sns
 import matplotlib.pyplot as plt
 from sklearn.model_selection import train_test_split
-from sklearn.preprocessing import LabelEncoder
+from sklearn.preprocessing import LabelEncoder, label_binarize
 from sklearn.tree import DecisionTreeClassifier
 from sklearn.naive_bayes import GaussianNB
-from sklearn.metrics import accuracy_score, classification_report, confusion_matrix
+from sklearn.metrics import (
+    accuracy_score, precision_score, recall_score, f1_score,
+    confusion_matrix, classification_report,
+    roc_curve, auc
+)
 
-st.title("Klasifikasi Data: Decision Tree vs Naive Bayes")
+st.title("Perbandingan Algoritma: Decision Tree vs Naive Bayes")
 
 uploaded_file = st.file_uploader("Upload file Excel", type=["xlsx"])
 
@@ -19,26 +22,20 @@ if uploaded_file is not None:
     st.subheader("Data Awal")
     st.write(df_raw.head())
 
-    # Rename kolom
+    # Rename dan pilih kolom
     df = df_raw.rename(columns={
         'Topology': 'topologi',
         'Vendor': 'vendor',
         'HP Cluster\n(SND Wajib Isi)': 'hp_cluster',
         'Status PO Cluster (SND Wajib Isi)': 'status_po'
-    })
-
-    df = df[['topologi', 'vendor', 'hp_cluster', 'status_po']]
-    st.subheader("Data yang Digunakan")
-    st.write(df.head())
+    })[['topologi', 'vendor', 'hp_cluster', 'status_po']]
 
     # Bersihkan dan ubah tipe data
     df = df.fillna("Unknown")
-    df['topologi'] = df['topologi'].astype(str)
-    df['vendor'] = df['vendor'].astype(str)
-    df['hp_cluster'] = df['hp_cluster'].astype(str)
-    df['status_po'] = df['status_po'].astype(str)
+    for col in df.columns:
+        df[col] = df[col].astype(str)
 
-    # Encoding
+    # Label Encoding
     le_topologi = LabelEncoder()
     le_vendor = LabelEncoder()
     le_hp_cluster = LabelEncoder()
@@ -49,56 +46,67 @@ if uploaded_file is not None:
     df['hp_cluster'] = le_hp_cluster.fit_transform(df['hp_cluster'])
     df['status_po'] = le_status_po.fit_transform(df['status_po'])
 
-    # Split
     X = df.drop('status_po', axis=1)
     y = df['status_po']
-    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
+    results = []
 
-    # Modeling
-    dt = DecisionTreeClassifier()
-    dt.fit(X_train, y_train)
-    y_pred_dt = dt.predict(X_test)
+    for ratio in [0.3, 0.2, 0.1]:
+        split_str = f"{int((1 - ratio) * 100)}:{int(ratio * 100)}"
+        X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=ratio, random_state=42)
 
-    nb = GaussianNB()
-    nb.fit(X_train, y_train)
-    y_pred_nb = nb.predict(X_test)
+        models = {
+            "Decision Tree": DecisionTreeClassifier(),
+            "Naive Bayes": GaussianNB()
+        }
 
-    acc_dt = accuracy_score(y_test, y_pred_dt)
-    acc_nb = accuracy_score(y_test, y_pred_nb)
+        for name, model in models.items():
+            model.fit(X_train, y_train)
+            y_pred = model.predict(X_test)
 
-    # Tampilkan Akurasi
-    st.subheader("Akurasi Model")
-    st.write("Decision Tree Accuracy:", acc_dt)
-    st.write("Naive Bayes Accuracy:", acc_nb)
+            results.append({
+                "Model": name,
+                "Split": split_str,
+                "Akurasi": accuracy_score(y_test, y_pred),
+                "Presisi": precision_score(y_test, y_pred, average='macro', zero_division=0),
+                "Recall": recall_score(y_test, y_pred, average='macro', zero_division=0),
+                "F1 Score": f1_score(y_test, y_pred, average='macro', zero_division=0)
+            })
 
-    # Tabel Perbandingan Akurasi
-    st.subheader("Tabel Perbandingan Akurasi")
-    acc_df = pd.DataFrame({
-        "Model": ["Decision Tree", "Naive Bayes"],
-        "Akurasi": [acc_dt, acc_nb]
-    })
-    st.dataframe(acc_df)
+    # Tampilkan Tabel Evaluasi
+    st.subheader("Tabel Evaluasi Akurasi, Presisi, Recall, F1")
+    result_df = pd.DataFrame(results)
+    st.dataframe(result_df)
 
-    # Grafik Perbandingan Akurasi
+    # Grafik Akurasi
     st.subheader("Grafik Perbandingan Akurasi")
     fig, ax = plt.subplots()
-    ax.bar(acc_df["Model"], acc_df["Akurasi"], color=["skyblue", "lightgreen"])
-    ax.set_ylim(0, 1)
+    for model in result_df['Model'].unique():
+        data = result_df[result_df['Model'] == model]
+        ax.plot(data['Split'], data['Akurasi'], marker='o', label=model)
     ax.set_ylabel("Akurasi")
-    ax.set_title("Perbandingan Akurasi Model")
-    for i, v in enumerate(acc_df["Akurasi"]):
-        ax.text(i, v + 0.01, f"{v:.2f}", ha='center', fontweight='bold')
+    ax.set_ylim(0, 1)
+    ax.set_title("Perbandingan Akurasi Berdasarkan Split Data")
+    ax.legend()
     st.pyplot(fig)
 
-    # Confusion Matrix dan Classification Report
-    st.subheader("Confusion Matrix: Decision Tree")
-    st.write(confusion_matrix(y_test, y_pred_dt))
+    # ROC Curve (Split 80:20)
+    st.subheader("ROC Curve (Split 80:20)")
+    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
+    y_bin = label_binarize(y_test, classes=np.unique(y))
 
-    st.subheader("Confusion Matrix: Naive Bayes")
-    st.write(confusion_matrix(y_test, y_pred_nb))
-
-    st.subheader("Classification Report: Decision Tree")
-    st.text(classification_report(y_test, y_pred_dt))
-
-    st.subheader("Classification Report: Naive Bayes")
-    st.text(classification_report(y_test, y_pred_nb))
+    fig_roc, ax_roc = plt.subplots()
+    for name, model in models.items():
+        model.fit(X_train, y_train)
+        if hasattr(model, "predict_proba"):
+            y_score = model.predict_proba(X_test)
+            fpr, tpr, _ = roc_curve(y_bin.ravel(), y_score.ravel())
+            roc_auc = auc(fpr, tpr)
+            ax_roc.plot(fpr, tpr, label=f"{name} (AUC = {roc_auc:.2f})")
+    ax_roc.plot([0, 1], [0, 1], 'k--')
+    ax_roc.set_xlim([0.0, 1.0])
+    ax_roc.set_ylim([0.0, 1.05])
+    ax_roc.set_xlabel('False Positive Rate')
+    ax_roc.set_ylabel('True Positive Rate')
+    ax_roc.set_title('ROC Curve')
+    ax_roc.legend(loc="lower right")
+    st.pyplot(fig_roc)
