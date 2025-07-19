@@ -1,6 +1,5 @@
 import streamlit as st
 import pandas as pd
-import numpy as np
 import seaborn as sns
 import matplotlib.pyplot as plt
 from sklearn.model_selection import train_test_split
@@ -9,131 +8,98 @@ from sklearn.tree import DecisionTreeClassifier
 from sklearn.naive_bayes import GaussianNB
 from sklearn.metrics import accuracy_score, classification_report, confusion_matrix
 
-# === Title ===
-st.title("📊 ML App: EDA + Decision Tree & Naive Bayes")
-st.write("Upload file Excel → Pilih sheet → Lakukan EDA → Preprocessing → Training Model → Evaluasi")
+# === Judul Aplikasi ===
+st.title("📊 ML App: C4.5 & Naive Bayes")
+st.write("Pilih sumber data (GitHub URL atau Upload File) → Preprocessing → Training → Evaluasi")
 
-# === Upload File ===
-uploaded_file = st.file_uploader("Upload file Excel (.xlsx)", type=["xlsx"])
+# === Input Pilihan Data ===
+data_source = st.radio("Pilih sumber data:", ["Upload File", "GitHub URL"])
 
-if uploaded_file is not None:
-    try:
-        # Pilih sheet
+df = None
+if data_source == "Upload File":
+    uploaded_file = st.file_uploader("Upload file Excel (.xlsx)", type=["xlsx"])
+    if uploaded_file:
         xls = pd.ExcelFile(uploaded_file)
-        sheet_names = xls.sheet_names
-        selected_sheet = st.selectbox("Pilih Sheet:", sheet_names)
-        
-        # Baca data
-        df = pd.read_excel(uploaded_file, sheet_name=selected_sheet)
-        st.subheader("Preview Data")
-        st.write(df.head())
-
-        st.write(f"**Jumlah Data:** {df.shape[0]} baris, {df.shape[1]} kolom")
-
-        # === EDA ===
-        st.subheader("📈 Exploratory Data Analysis")
-        st.write("### Statistik Deskriptif")
-        st.write(df.describe(include="all"))
-
-        # Korelasi
-        numeric_cols = df.select_dtypes(include=np.number).columns
-        if len(numeric_cols) > 1:
-            st.write("### Korelasi Heatmap")
-            corr = df[numeric_cols].corr()
-            fig, ax = plt.subplots(figsize=(8, 5))
-            sns.heatmap(corr, annot=True, cmap="coolwarm", ax=ax)
-            st.pyplot(fig)
-        else:
-            st.warning("Tidak cukup kolom numerik untuk korelasi.")
-
-        # Distribusi
-        if len(numeric_cols) > 0:
-            col = st.selectbox("Pilih kolom untuk distribusi:", numeric_cols)
-            fig2, ax2 = plt.subplots()
-            sns.histplot(df[col].dropna(), kde=True, ax=ax2)
-            st.pyplot(fig2)
-
-        # === Preprocessing ===
-        st.subheader("⚙️ Preprocessing Data")
-        target_col = st.selectbox("Pilih kolom target:", df.columns)
-
-        # Hapus hanya baris yang targetnya kosong
-        if df.isnull().values.any():
-            st.warning("Dataset mengandung nilai kosong. Baris dengan target kosong akan dihapus.")
-        df = df.dropna(subset=[target_col])
-
-        # Jika dataset kosong, hentikan proses
-        if df.shape[0] == 0:
-            st.error("Dataset kosong setelah menghapus nilai NaN di target. Periksa data Anda!")
+elif data_source == "GitHub URL":
+    github_url = st.text_input("Masukkan URL RAW file Excel dari GitHub:")
+    if github_url:
+        try:
+            xls = pd.ExcelFile(github_url)
+        except Exception as e:
+            st.error(f"Gagal mengambil file dari URL: {e}")
             st.stop()
 
-        X = df.drop(columns=[target_col])
-        y = df[target_col]
+# === Jika file tersedia ===
+if 'xls' in locals():
+    sheet_names = xls.sheet_names
+    selected_sheet = st.selectbox("Pilih Sheet:", sheet_names)
 
-        # Label Encoding target
-        le = LabelEncoder()
-        y = le.fit_transform(y)
+    # Baca data
+    df = pd.read_excel(xls, sheet_name=selected_sheet)
+    st.subheader("Preview Data")
+    st.write(df.head())
 
-        # One-hot encoding fitur kategorikal
-        X_encoded = pd.get_dummies(X)
+    st.write(f"**Jumlah Data:** {df.shape[0]} baris, {df.shape[1]} kolom")
 
-        # Pastikan semua numeric + isi NaN dengan 0
-        X_encoded = X_encoded.apply(pd.to_numeric, errors='coerce').fillna(0)
+    # Pilih kolom target
+    target_col = st.selectbox("Pilih kolom target:", df.columns)
 
-        # Jika tidak ada fitur, hentikan proses
-        if X_encoded.shape[1] == 0 or X_encoded.shape[0] == 0:
-            st.error("Dataset tidak valid untuk training (tidak ada fitur atau data kosong).")
-            st.stop()
+    # Drop NaN hanya di target
+    df = df.dropna(subset=[target_col])
+    if df.shape[0] == 0:
+        st.error("Dataset kosong setelah membersihkan NaN di target.")
+        st.stop()
 
-        # Scaling
-        scaler = MinMaxScaler()
-        X_scaled = scaler.fit_transform(X_encoded)
+    # Pisahkan fitur dan target
+    X = df.drop(columns=[target_col])
+    y = df[target_col]
 
-        # Split data
-        X_train, X_test, y_train, y_test = train_test_split(X_scaled, y, test_size=0.2, random_state=42)
+    # Label encoding target
+    le = LabelEncoder()
+    y = le.fit_transform(y)
 
-        # === Training Models ===
-        st.subheader("🤖 Training Models")
+    # One-hot encoding fitur kategorikal
+    X_encoded = pd.get_dummies(X).apply(pd.to_numeric, errors='coerce').fillna(0)
 
-        # Decision Tree
-        dt = DecisionTreeClassifier(random_state=42)
-        dt.fit(X_train, y_train)
-        y_pred_dt = dt.predict(X_test)
+    if X_encoded.shape[1] == 0:
+        st.error("Tidak ada fitur yang valid untuk model.")
+        st.stop()
 
-        # Naive Bayes
-        nb = GaussianNB()
-        nb.fit(X_train, y_train)
-        y_pred_nb = nb.predict(X_test)
+    # Scaling
+    scaler = MinMaxScaler()
+    X_scaled = scaler.fit_transform(X_encoded)
 
-        # === Evaluation ===
-        st.subheader("📊 Evaluasi Model")
+    # Split data
+    X_train, X_test, y_train, y_test = train_test_split(X_scaled, y, test_size=0.2, random_state=42)
 
-        st.write("### Akurasi:")
-        st.write(f"**Decision Tree:** {accuracy_score(y_test, y_pred_dt):.2f}")
-        st.write(f"**Naive Bayes:** {accuracy_score(y_test, y_pred_nb):.2f}")
+    # === Model C4.5 ===
+    st.subheader("🌳 Model C4.5 (Decision Tree)")
+    c45 = DecisionTreeClassifier(criterion="entropy", random_state=42)
+    c45.fit(X_train, y_train)
+    y_pred_c45 = c45.predict(X_test)
 
-        # Classification Report
-        st.write("### Classification Report (Decision Tree)")
-        st.text(classification_report(y_test, y_pred_dt))
+    st.write(f"**Akurasi C4.5:** {accuracy_score(y_test, y_pred_c45):.2f}")
+    st.text("Classification Report (C4.5):")
+    st.text(classification_report(y_test, y_pred_c45))
 
-        st.write("### Classification Report (Naive Bayes)")
-        st.text(classification_report(y_test, y_pred_nb))
+    cm_c45 = confusion_matrix(y_test, y_pred_c45)
+    fig1, ax1 = plt.subplots()
+    sns.heatmap(cm_c45, annot=True, fmt="d", cmap="Blues", ax=ax1)
+    ax1.set_title("Confusion Matrix - C4.5")
+    st.pyplot(fig1)
 
-        # Confusion Matrix
-        st.write("### Confusion Matrix (Decision Tree)")
-        cm_dt = confusion_matrix(y_test, y_pred_dt)
-        fig3, ax3 = plt.subplots()
-        sns.heatmap(cm_dt, annot=True, fmt="d", cmap="Blues", ax=ax3)
-        st.pyplot(fig3)
+    # === Model Naive Bayes ===
+    st.subheader("🤖 Model Naive Bayes")
+    nb = GaussianNB()
+    nb.fit(X_train, y_train)
+    y_pred_nb = nb.predict(X_test)
 
-        st.write("### Confusion Matrix (Naive Bayes)")
-        cm_nb = confusion_matrix(y_test, y_pred_nb)
-        fig4, ax4 = plt.subplots()
-        sns.heatmap(cm_nb, annot=True, fmt="d", cmap="Greens", ax=ax4)
-        st.pyplot(fig4)
+    st.write(f"**Akurasi Naive Bayes:** {accuracy_score(y_test, y_pred_nb):.2f}")
+    st.text("Classification Report (Naive Bayes):")
+    st.text(classification_report(y_test, y_pred_nb))
 
-    except Exception as e:
-        st.error(f"Terjadi kesalahan: {e}")
-
-else:
-    st.info("Silakan upload file Excel terlebih dahulu.")
+    cm_nb = confusion_matrix(y_test, y_pred_nb)
+    fig2, ax2 = plt.subplots()
+    sns.heatmap(cm_nb, annot=True, fmt="d", cmap="Greens", ax=ax2)
+    ax2.set_title("Confusion Matrix - Naive Bayes")
+    st.pyplot(fig2)
