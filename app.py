@@ -23,9 +23,6 @@ uploaded_file = st.file_uploader("🗂 Upload File Excel", type=["xlsx"])
 if uploaded_file is not None:
     df_raw = pd.read_excel(uploaded_file)
 
-    st.subheader("📋 Preview Data Asli")
-    st.dataframe(df_raw.head())
-
     # Preprocessing
     df = df_raw.rename(columns={
         'Topology': 'topologi',
@@ -39,6 +36,10 @@ if uploaded_file is not None:
     df['topologi_enc'] = LabelEncoder().fit_transform(df['topologi'].astype(str))
     df['vendor_enc'] = LabelEncoder().fit_transform(df['vendor'].astype(str))
     df['hp_cluster_norm'] = MinMaxScaler().fit_transform(df[['hp_cluster']])
+
+    # Tampilkan Data Hasil Preprocessing
+    st.subheader("📌 Data Setelah Preprocessing")
+    st.dataframe(df[['topologi_enc', 'vendor_enc', 'hp_cluster_norm', 'label']].head())
 
     # Sidebar Controls
     st.sidebar.header("⚙️ Pengaturan Analisis")
