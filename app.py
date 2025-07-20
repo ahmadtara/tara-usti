@@ -8,6 +8,7 @@ from sklearn.tree import DecisionTreeClassifier
 from sklearn.naive_bayes import GaussianNB
 from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score, confusion_matrix
 import io
+import time
 
 # ----------------- CONFIG -----------------
 st.set_page_config(page_title="Dashboard Analisis C4.5 vs Naive Bayes", layout="wide")
@@ -31,6 +32,15 @@ body {
 div[data-testid="stHorizontalBlock"] > div {
     border-radius: 12px;
     padding: 12px;
+}
+.rocket {
+    width: 100px;
+    animation: fly 3s linear infinite;
+}
+@keyframes fly {
+    0% {transform: translateY(0);}
+    50% {transform: translateY(-40px);}
+    100% {transform: translateY(0);}
 }
 </style>
 """
@@ -85,17 +95,26 @@ if st.session_state.file_uploaded:
     X = df[['topologi_enc', 'vendor_enc', 'hp_cluster_norm']]
     y = df['label']
 
-    # Training dengan animasi loading
-    with st.spinner("🔄 Training model... Mohon tunggu"):
-        X_train, X_test, y_train, y_test = train_test_split(X, y, stratify=y, test_size=split_ratio, random_state=42)
+    # ----------------- ANIMASI LOADING -----------------
+    with st.empty():
+        st.markdown("""
+        <div style="text-align:center;">
+            <img src="https://i.ibb.co/jbG7r4g/rocket.png" class="rocket">
+            <h3 style="color:#81C784;">🚀 MyRepublic sedang menghitung... Tunggu sebentar</h3>
+        </div>
+        """, unsafe_allow_html=True)
+        time.sleep(3)  # Simulasi delay (3 detik)
 
-        model_c45 = DecisionTreeClassifier(criterion='entropy', random_state=42)
-        model_c45.fit(X_train, y_train)
-        y_pred_c45 = model_c45.predict(X_test)
+    # Training Model
+    X_train, X_test, y_train, y_test = train_test_split(X, y, stratify=y, test_size=split_ratio, random_state=42)
 
-        model_nb = GaussianNB()
-        model_nb.fit(X_train, y_train)
-        y_pred_nb = model_nb.predict(X_test)
+    model_c45 = DecisionTreeClassifier(criterion='entropy', random_state=42)
+    model_c45.fit(X_train, y_train)
+    y_pred_c45 = model_c45.predict(X_test)
+
+    model_nb = GaussianNB()
+    model_nb.fit(X_train, y_train)
+    y_pred_nb = model_nb.predict(X_test)
 
     # Evaluasi
     def evaluate(y_true, y_pred):
@@ -116,10 +135,9 @@ if st.session_state.file_uploaded:
 
     best = df_eval.sort_values(by=metric_option, ascending=False).iloc[0]
 
-    # ----------------- DASHBOARD LAYOUT -----------------
+    # ----------------- DASHBOARD -----------------
     col1, col2 = st.columns([1, 2])
 
-    # Card Ringkasan + Download CSV
     with col1:
         st.markdown(f"""
         <div style="background:#263238; padding:20px; border-radius:12px; color:white; box-shadow:0 4px 8px rgba(0,0,0,0.3);">
@@ -130,11 +148,9 @@ if st.session_state.file_uploaded:
         </div>
         """, unsafe_allow_html=True)
 
-        # Download CSV
         csv = df_eval.to_csv(index=False).encode('utf-8')
         st.download_button("⬇️ Download Hasil (CSV)", data=csv, file_name="hasil_evaluasi.csv", mime="text/csv")
 
-    # Grafik & Confusion Matrix
     with col2:
         fig, axes = plt.subplots(1, 3, figsize=(18, 5))
 
@@ -153,12 +169,10 @@ if st.session_state.file_uploaded:
         plt.tight_layout()
         st.pyplot(fig)
 
-        # Download Grafik
         buf = io.BytesIO()
         fig.savefig(buf, format="png")
         buf.seek(0)
         st.download_button("⬇️ Download Grafik (PNG)", data=buf, file_name="grafik_dashboard.png", mime="image/png")
 
-    # Tabel Evaluasi
     st.markdown("<h3 style='color:#81C784;'>📄 Tabel Evaluasi Lengkap</h3>", unsafe_allow_html=True)
     st.dataframe(df_eval.style.highlight_max(axis=0, color='lightgreen'))
