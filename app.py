@@ -1,4 +1,3 @@
-
 import streamlit as st
 import pandas as pd
 import seaborn as sns
@@ -21,24 +20,33 @@ if uploaded_file:
     else:
         df_raw = pd.read_csv(uploaded_file)
 
+    # Clean column names
+    df_raw.columns = df_raw.columns.str.replace("\\n", " ", regex=True).str.strip()
+
+    # Drop kolom No jika semua kosong
+    if "No" in df_raw.columns and df_raw["No"].isnull().all():
+        df_raw.drop(columns=["No"], inplace=True)
+
     st.subheader("Preview Data")
     st.dataframe(df_raw.head())
 
-    # Preprocessing
-    df = df_raw.dropna().copy()
-    if "LABEL" not in df.columns:
-        st.error("Kolom target 'LABEL' tidak ditemukan dalam data.")
-    else:
-        X = df.drop(columns=['LABEL'])
-        y = df['LABEL']
+    label_col = "Status PO Cluster (SND Wajib Isi)"
 
+    if label_col not in df_raw.columns:
+        st.error(f"Kolom target '{label_col}' tidak ditemukan dalam data.")
+    else:
+        df = df_raw.dropna(subset=[label_col]).copy()
+        X = df.drop(columns=[label_col])
+        y = df[label_col]
+
+        # Encoding fitur kategorikal
         for col in X.columns:
             if X[col].dtype == 'object':
                 X[col] = LabelEncoder().fit_transform(X[col])
         if y.dtype == 'object':
             y = LabelEncoder().fit_transform(y)
 
-        # Split configurations
+        # Split configurations dan model
         splits = [(0.7, 0.3), (0.8, 0.2), (0.9, 0.1)]
         models = {
             'C4.5 (Decision Tree)': DecisionTreeClassifier(criterion='entropy'),
@@ -65,7 +73,7 @@ if uploaded_file:
 
         df_results = pd.DataFrame(results)
 
-        # Layout seperti gambar
+        # Layout tampilan seperti dashboard
         col1, col2 = st.columns(2)
         with col1:
             st.markdown("### Model Base Results")
