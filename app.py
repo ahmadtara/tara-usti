@@ -51,7 +51,7 @@ if not st.session_state.file_uploaded:
     if uploaded_file is not None:
         st.session_state.file_uploaded = True
         st.session_state.uploaded_file = uploaded_file
-        st.experimental_rerun()
+        st.rerun()
 else:
     uploaded_file = st.session_state.uploaded_file
     st.success(f"✅ File berhasil diunggah: {uploaded_file.name}")
