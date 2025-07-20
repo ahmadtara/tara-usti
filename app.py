@@ -8,12 +8,12 @@ from sklearn.tree import DecisionTreeClassifier
 from sklearn.naive_bayes import GaussianNB
 from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score, confusion_matrix
 import io
-import base64
 
-# Konfigurasi halaman
+# ----------------- CONFIG -----------------
 st.set_page_config(page_title="Dashboard Analisis C4.5 vs Naive Bayes", layout="wide")
+sns.set_theme(style="whitegrid")
 
-# --- CSS DARK MODE ---
+# DARK MODE CSS
 dark_css = """
 <style>
 body {
@@ -36,15 +36,28 @@ div[data-testid="stHorizontalBlock"] > div {
 """
 st.markdown(dark_css, unsafe_allow_html=True)
 
-# Judul Utama
+# ----------------- TITLE -----------------
 st.markdown("<h1 style='text-align:center; color:#4CAF50;'>📊 Dashboard Analisis C4.5 vs Naive Bayes</h1>", unsafe_allow_html=True)
 st.markdown("<p style='text-align:center; font-size:18px;'>Prediksi Ketercapaian Target PO - MyRepublic</p>", unsafe_allow_html=True)
 st.markdown("---")
 
-# Upload File
-uploaded_file = st.file_uploader("🗂 Upload File Excel", type=["xlsx"])
+# ----------------- SESSION STATE -----------------
+if "file_uploaded" not in st.session_state:
+    st.session_state.file_uploaded = False
 
-if uploaded_file is not None:
+# ----------------- UPLOAD SECTION -----------------
+if not st.session_state.file_uploaded:
+    uploaded_file = st.file_uploader("🗂 Upload File Excel", type=["xlsx"])
+    if uploaded_file is not None:
+        st.session_state.file_uploaded = True
+        st.session_state.uploaded_file = uploaded_file
+        st.experimental_rerun()
+else:
+    uploaded_file = st.session_state.uploaded_file
+    st.success(f"✅ File berhasil diunggah: {uploaded_file.name}")
+
+# ----------------- MAIN PROCESS -----------------
+if st.session_state.file_uploaded:
     df_raw = pd.read_excel(uploaded_file)
 
     # Preprocessing
@@ -61,7 +74,7 @@ if uploaded_file is not None:
     df['vendor_enc'] = LabelEncoder().fit_transform(df['vendor'].astype(str))
     df['hp_cluster_norm'] = MinMaxScaler().fit_transform(df[['hp_cluster']])
 
-    # Sidebar Controls
+    # Sidebar controls
     st.sidebar.header("⚙️ Pengaturan Analisis")
     split_option = st.sidebar.radio("Pilih Rasio Split Data", ["80:20", "70:30", "90:10"])
     metric_option = st.sidebar.radio("Pilih Metrik Evaluasi", ["Accuracy", "Precision", "Recall", "F1-score"])
@@ -72,7 +85,7 @@ if uploaded_file is not None:
     X = df[['topologi_enc', 'vendor_enc', 'hp_cluster_norm']]
     y = df['label']
 
-    # --- TRAINING DENGAN LOADING ANIMASI ---
+    # Training dengan animasi loading
     with st.spinner("🔄 Training model... Mohon tunggu"):
         X_train, X_test, y_train, y_test = train_test_split(X, y, stratify=y, test_size=split_ratio, random_state=42)
 
@@ -101,28 +114,27 @@ if uploaded_file is not None:
         {"Model": "Naive Bayes", **nb_result}
     ])
 
-    # Hasil terbaik
     best = df_eval.sort_values(by=metric_option, ascending=False).iloc[0]
 
-    # --- DASHBOARD ---
+    # ----------------- DASHBOARD LAYOUT -----------------
     col1, col2 = st.columns([1, 2])
 
-    # Card Ringkasan
+    # Card Ringkasan + Download CSV
     with col1:
-        st.markdown("""
+        st.markdown(f"""
         <div style="background:#263238; padding:20px; border-radius:12px; color:white; box-shadow:0 4px 8px rgba(0,0,0,0.3);">
         <h3 style='color:#4CAF50;'>📌 Ringkasan Analisis</h3>
-        <p><b>Metrik:</b> {}</p>
-        <p><b>Model Terbaik:</b> <span style='color:#81C784;'>{}</span></p>
-        <p><b>Skor:</b> {:.4f}</p>
+        <p><b>Metrik:</b> {metric_option}</p>
+        <p><b>Model Terbaik:</b> <span style='color:#81C784;'>{best['Model']}</span></p>
+        <p><b>Skor:</b> {best[metric_option]:.4f}</p>
         </div>
-        """.format(metric_option, best['Model'], best[metric_option]), unsafe_allow_html=True)
+        """, unsafe_allow_html=True)
 
         # Download CSV
         csv = df_eval.to_csv(index=False).encode('utf-8')
         st.download_button("⬇️ Download Hasil (CSV)", data=csv, file_name="hasil_evaluasi.csv", mime="text/csv")
 
-    # Grafik + Confusion Matrix
+    # Grafik & Confusion Matrix
     with col2:
         fig, axes = plt.subplots(1, 3, figsize=(18, 5))
 
