@@ -1,6 +1,5 @@
 import streamlit as st
 import pandas as pd
-import numpy as np
 import seaborn as sns
 import matplotlib.pyplot as plt
 from sklearn.model_selection import train_test_split
@@ -9,12 +8,15 @@ from sklearn.tree import DecisionTreeClassifier
 from sklearn.naive_bayes import GaussianNB
 from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score, confusion_matrix
 
+# Tema Seaborn
+sns.set_theme(style="whitegrid")
+
 # Konfigurasi halaman
 st.set_page_config(page_title="Analisis Algoritma C4.5 vs Naive Bayes", layout="wide")
 
 # Judul Utama
 st.title("📊 Analisis Perbandingan Algoritma C4.5 dan Naive Bayes")
-st.markdown("### Untuk Prediksi Ketercapaian Target PO - MyRepublic")
+st.markdown("### Prediksi Ketercapaian Target PO - MyRepublic")
 st.markdown("---")
 
 # Upload File
@@ -76,24 +78,28 @@ if uploaded_file is not None:
         {"Model": "Naive Bayes", **nb_result}
     ])
 
-    # Grafik Perbandingan Metrik
-    col1, col2 = st.columns(2)
+    # Tampilan Analisis
+    col1, col2 = st.columns([1, 2])
 
     with col1:
         st.markdown("### 📈 Grafik Performa Model")
-        fig1 = plt.figure(figsize=(6, 4))
-        sns.barplot(data=df_eval, x='Model', y=metric_option, palette="Set2")
-        plt.ylim(0, 1)
-        plt.title(f"Perbandingan {metric_option}")
+        fig1, ax1 = plt.subplots(figsize=(10, 4))
+        sns.barplot(data=df_eval, x='Model', y=metric_option, palette="viridis", ax=ax1)
+        ax1.set_ylim(0, 1)
+        ax1.set_title(f"Perbandingan {metric_option}", fontsize=14, weight='bold')
+        for i, val in enumerate(df_eval[metric_option]):
+            ax1.text(i, val + 0.02, f"{val:.2f}", ha='center', fontsize=12)
+        plt.tight_layout()
         st.pyplot(fig1)
 
     with col2:
         st.markdown("### 📊 Confusion Matrix")
         fig2, axes = plt.subplots(1, 2, figsize=(10, 4))
         sns.heatmap(confusion_matrix(y_test, y_pred_c45), annot=True, fmt='d', cmap='Blues', ax=axes[0])
-        axes[0].set_title("C4.5")
+        axes[0].set_title("C4.5", fontsize=12)
         sns.heatmap(confusion_matrix(y_test, y_pred_nb), annot=True, fmt='d', cmap='Greens', ax=axes[1])
-        axes[1].set_title("Naive Bayes")
+        axes[1].set_title("Naive Bayes", fontsize=12)
+        plt.tight_layout()
         st.pyplot(fig2)
 
     # Tabel Evaluasi
