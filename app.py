@@ -37,10 +37,6 @@ if uploaded_file is not None:
     df['vendor_enc'] = LabelEncoder().fit_transform(df['vendor'].astype(str))
     df['hp_cluster_norm'] = MinMaxScaler().fit_transform(df[['hp_cluster']])
 
-    # Tampilkan Data Hasil Preprocessing
-    st.subheader("📌 Data Setelah Preprocessing")
-    st.dataframe(df[['topologi_enc', 'vendor_enc', 'hp_cluster_norm', 'label']].head())
-
     # Sidebar Controls
     st.sidebar.header("⚙️ Pengaturan Analisis")
     split_option = st.sidebar.selectbox("Pilih Rasio Split Data", ["80:20", "70:30", "90:10"])
@@ -80,7 +76,7 @@ if uploaded_file is not None:
         {"Model": "Naive Bayes", **nb_result}
     ])
 
-    # Grafik
+    # Grafik Perbandingan Metrik
     col1, col2 = st.columns(2)
 
     with col1:
