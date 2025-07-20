@@ -1,99 +1,86 @@
+
 import streamlit as st
 import pandas as pd
-import numpy as np
 import seaborn as sns
 import matplotlib.pyplot as plt
 from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import LabelEncoder
 from sklearn.tree import DecisionTreeClassifier
 from sklearn.naive_bayes import GaussianNB
-from sklearn.metrics import accuracy_score, classification_report, confusion_matrix
+from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score
 
+st.set_page_config(layout="wide")
 st.title("Analisis Perbandingan Algoritma: C4.5 vs Naive Bayes Untuk Memprediksi Ketercapaian Target PO Dalam Membangun Project FTTH")
 
-uploaded_file = st.file_uploader("Upload file Excel", type=["xlsx"])
+# Upload file
+uploaded_file = st.file_uploader("Upload Dataset", type=["xlsx", "csv"])
+if uploaded_file:
+    # Load data
+    if uploaded_file.name.endswith(".xlsx"):
+        df_raw = pd.read_excel(uploaded_file)
+    else:
+        df_raw = pd.read_csv(uploaded_file)
 
-# Pilihan rasio split data
-split_option = st.selectbox("Pilih rasio data latih vs uji", ("70:30", "80:20", "90:10"))
-split_ratio = {"70:30": 0.3, "80:20": 0.2, "90:10": 0.1}[split_option]
+    st.subheader("Preview Data")
+    st.dataframe(df_raw.head())
 
-if uploaded_file is not None:
-    xls = pd.ExcelFile(uploaded_file)
-    df_raw = xls.parse('Sheet1')
-    st.subheader("Data Awal")
-    st.write(df_raw.head())
+    # Preprocessing
+    df = df_raw.dropna().copy()
+    if "LABEL" not in df.columns:
+        st.error("Kolom target 'LABEL' tidak ditemukan dalam data.")
+    else:
+        X = df.drop(columns=['LABEL'])
+        y = df['LABEL']
 
-    # Rename kolom
-    df = df_raw.rename(columns={
-        'Topology': 'topologi',
-        'Vendor': 'vendor',
-        'HP Cluster\n(SND Wajib Isi)': 'hp_cluster',
-        'Status PO Cluster (SND Wajib Isi)': 'status_po'
-    })
-    df = df[['topologi', 'vendor', 'hp_cluster', 'status_po']]
-    st.subheader("Data yang Digunakan")
-    st.write(df.head())
+        for col in X.columns:
+            if X[col].dtype == 'object':
+                X[col] = LabelEncoder().fit_transform(X[col])
+        if y.dtype == 'object':
+            y = LabelEncoder().fit_transform(y)
 
-    # Membersihkan dan mengonversi tipe data
-    df = df.fillna("Unknown")
-    for col in df.columns:
-        df[col] = df[col].astype(str)
+        # Split configurations
+        splits = [(0.7, 0.3), (0.8, 0.2), (0.9, 0.1)]
+        models = {
+            'C4.5 (Decision Tree)': DecisionTreeClassifier(criterion='entropy'),
+            'Naive Bayes': GaussianNB()
+        }
 
-    # Encoding
-    encoders = {col: LabelEncoder() for col in df.columns}
-    for col, encoder in encoders.items():
-        df[col] = encoder.fit_transform(df[col])
+        results = []
+        for train_size, test_size in splits:
+            X_train, X_test, y_train, y_test = train_test_split(
+                X, y, train_size=train_size, test_size=test_size, random_state=42
+            )
+            for model_name, model in models.items():
+                model.fit(X_train, y_train)
+                y_pred = model.predict(X_test)
 
-    # Heatmap korelasi
-    st.subheader("Heatmap Korelasi")
-    fig_corr, ax_corr = plt.subplots()
-    sns.heatmap(df.corr(), annot=True, cmap="coolwarm", ax=ax_corr)
-    st.pyplot(fig_corr)
+                results.append({
+                    'Model': model_name,
+                    'Split': f"{int(train_size*100)}% - {int(test_size*100)}%",
+                    'Accuracy': accuracy_score(y_test, y_pred),
+                    'Precision': precision_score(y_test, y_pred, average='weighted', zero_division=0),
+                    'Recall': recall_score(y_test, y_pred, average='weighted'),
+                    'F1 Score': f1_score(y_test, y_pred, average='weighted'),
+                })
 
-    # Split data
-    X = df.drop('status_po', axis=1)
-    y = df['status_po']
-    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=split_ratio, random_state=42)
+        df_results = pd.DataFrame(results)
 
-    # Modeling Decision Tree
-    dt = DecisionTreeClassifier()
-    dt.fit(X_train, y_train)
-    y_pred_dt = dt.predict(X_test)
+        # Layout seperti gambar
+        col1, col2 = st.columns(2)
+        with col1:
+            st.markdown("### Model Base Results")
+            metric_base = st.selectbox("Select Metric to Display", ['Accuracy', 'Precision', 'Recall', 'F1 Score'], key="base")
+            fig1 = plt.figure(figsize=(8, 5))
+            sns.barplot(data=df_results, x="Split", y=metric_base, hue="Model")
+            plt.ylim(0, 1.05)
+            plt.title(f"Model Performance by {metric_base.lower()}")
+            st.pyplot(fig1)
 
-    # Modeling Naive Bayes
-    nb = GaussianNB()
-    nb.fit(X_train, y_train)
-    y_pred_nb = nb.predict(X_test)
-
-    # Evaluasi akurasi
-    acc_dt = accuracy_score(y_test, y_pred_dt)
-    acc_nb = accuracy_score(y_test, y_pred_nb)
-
-    # Tabel perbandingan
-    st.subheader("Tabel Perbandingan Akurasi")
-    comparison_df = pd.DataFrame({
-        "Algoritma": ["Decision Tree", "Naive Bayes"],
-        "Akurasi": [acc_dt, acc_nb]
-    })
-    st.table(comparison_df)
-
-    # Diagram batang perbandingan akurasi
-    st.subheader("Diagram Batang Perbandingan Akurasi")
-    fig_bar, ax_bar = plt.subplots()
-    sns.barplot(x="Algoritma", y="Akurasi", data=comparison_df, palette="Set2", ax=ax_bar)
-    ax_bar.set_ylim(0, 1)
-    st.pyplot(fig_bar)
-
-    # Matriks dan laporan klasifikasi
-    st.subheader("Confusion Matrix & Classification Report")
-
-    col1, col2 = st.columns(2)
-    with col1:
-        st.write("Decision Tree")
-        st.write(confusion_matrix(y_test, y_pred_dt))
-        st.text(classification_report(y_test, y_pred_dt))
-
-    with col2:
-        st.write("Naive Bayes")
-        st.write(confusion_matrix(y_test, y_pred_nb))
-        st.text(classification_report(y_test, y_pred_nb))
+        with col2:
+            st.markdown("### Hasil Evaluasi")
+            metric_boosted = st.selectbox("Select Metric to Display", ['Accuracy', 'Precision', 'Recall', 'F1 Score'], key="boosted")
+            fig2 = plt.figure(figsize=(8, 5))
+            sns.barplot(data=df_results, x="Split", y=metric_boosted, hue="Model")
+            plt.ylim(0, 1.05)
+            plt.title(f"Model Performance by {metric_boosted.lower()}")
+            st.pyplot(fig2)
