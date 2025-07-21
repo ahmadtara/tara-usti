@@ -152,11 +152,11 @@ if st.session_state.file_uploaded:
     nb_tercapai = sum(y_pred_nb == 1)
     nb_tidak = sum(y_pred_nb == 0)
 
-    st.markdown("### \ud83c\udf1f Hasil Prediksi PO Tercapai & Tidak Tercapai")
+    st.markdown("### 🎯 Hasil Prediksi PO Tercapai & Tidak Tercapai")
     col1, col2 = st.columns(2)
 
     with col1:
-        st.markdown("#### \ud83d\udd34 C4.5")
+        st.markdown("#### 🔴 C4.5")
         st.markdown(f"- PO **Tercapai**: **{c45_tercapai} data**  \n- PO **Tidak Tercapai**: **{c45_tidak} data**")
 
         fig1, ax1 = plt.subplots(figsize=(2.5, 2))
@@ -168,7 +168,7 @@ if st.session_state.file_uploaded:
         st.pyplot(fig1)
 
     with col2:
-        st.markdown("#### \ud83d\udfe2 Naive Bayes")
+        st.markdown("#### 🔴 Naive Bayes")
         st.markdown(f"- PO **Tercapai**: **{nb_tercapai} data**  \n- PO **Tidak Tercapai**: **{nb_tidak} data**")
 
         fig2, ax2 = plt.subplots(figsize=(2.5, 2))
