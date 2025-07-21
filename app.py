@@ -85,7 +85,7 @@ if st.session_state.file_uploaded:
     X = df[['topologi_enc', 'vendor_enc', 'hp_cluster_norm']]
     y = df['label']
 
-    # Training dengan animasi loading
+    # Training model
     with st.spinner("🔄 Training model... Mohon tunggu"):
         X_train, X_test, y_train, y_test = train_test_split(X, y, stratify=y, test_size=split_ratio, random_state=42)
 
@@ -97,7 +97,7 @@ if st.session_state.file_uploaded:
         model_nb.fit(X_train, y_train)
         y_pred_nb = model_nb.predict(X_test)
 
-    # Evaluasi
+    # Evaluasi metrik
     def evaluate(y_true, y_pred):
         return {
             "Accuracy": accuracy_score(y_true, y_pred),
@@ -116,10 +116,68 @@ if st.session_state.file_uploaded:
 
     best = df_eval.sort_values(by=metric_option, ascending=False).iloc[0]
 
+    # ----------------- CONFUSION MATRIX & ANALISIS -----------------
+    cm_c45 = confusion_matrix(y_test, y_pred_c45)
+    cm_nb = confusion_matrix(y_test, y_pred_nb)
+
+    # C4.5
+    TP_c45 = cm_c45[1, 1]
+    FN_c45 = cm_c45[1, 0]
+    FP_c45 = cm_c45[0, 1]
+    TN_c45 = cm_c45[0, 0]
+    acc_c45 = (TP_c45 + TN_c45) / sum(sum(cm_c45))
+
+    # Naive Bayes
+    TP_nb = cm_nb[1, 1]
+    FN_nb = cm_nb[1, 0]
+    FP_nb = cm_nb[0, 1]
+    TN_nb = cm_nb[0, 0]
+    acc_nb = (TP_nb + TN_nb) / sum(sum(cm_nb))
+
+    st.markdown("### 📌 Contoh Hasil Prediksi Seperti Tabel")
+
+    st.markdown("#### 🔴 C4.5")
+    st.markdown(f"""
+- Pred: PO | Pred: Tidak PO  
+  - Actual PO: {TP_c45} (TP), {FN_c45} (FN)  
+  - Actual Bukan: {FP_c45} (FP), {TN_c45} (TN)  
+- **Accuracy = (TP + TN) / Total = ({TP_c45} + {TN_c45}) / {sum(sum(cm_c45))} = {acc_c45 * 100:.1f}%**
+""")
+
+    st.markdown("#### 🔵 Naive Bayes")
+    st.markdown(f"""
+- Pred: PO | Pred: Tidak PO  
+  - Actual PO: {TP_nb} (TP), {FN_nb} (FN)  
+  - Actual Bukan: {FP_nb} (FP), {TN_nb} (TN)  
+- **Accuracy = (TP + TN) / Total = ({TP_nb} + {TN_nb}) / {sum(sum(cm_nb))} = {acc_nb * 100:.1f}%**
+""")
+
+    # ----------------- HASIL PREDIKSI PO -----------------
+    c45_tercapai = sum(y_pred_c45 == 1)
+    c45_tidak = sum(y_pred_c45 == 0)
+    nb_tercapai = sum(y_pred_nb == 1)
+    nb_tidak = sum(y_pred_nb == 0)
+
+    st.markdown("### 🎯 Hasil Prediksi PO Tercapai & Tidak Tercapai")
+    colA, colB = st.columns(2)
+
+    with colA:
+        st.markdown("#### 🔴 C4.5")
+        st.markdown(f"""
+- PO **Tercapai** (prediksi `1`): **{c45_tercapai} data**  
+- PO **Tidak Tercapai** (prediksi `0`): **{c45_tidak} data**
+""")
+
+    with colB:
+        st.markdown("#### 🔵 Naive Bayes")
+        st.markdown(f"""
+- PO **Tercapai** (prediksi `1`): **{nb_tercapai} data**  
+- PO **Tidak Tercapai** (prediksi `0`): **{nb_tidak} data**
+""")
+
     # ----------------- DASHBOARD LAYOUT -----------------
     col1, col2 = st.columns([1, 2])
 
-    # Card Ringkasan + Download CSV
     with col1:
         st.markdown(f"""
         <div style="background:#263238; padding:20px; border-radius:12px; color:white; box-shadow:0 4px 8px rgba(0,0,0,0.3);">
@@ -130,30 +188,27 @@ if st.session_state.file_uploaded:
         </div>
         """, unsafe_allow_html=True)
 
-        # Download CSV
         csv = df_eval.to_csv(index=False).encode('utf-8')
         st.download_button("⬇️ Download Hasil (CSV)", data=csv, file_name="hasil_evaluasi.csv", mime="text/csv")
 
-    # Grafik & Confusion Matrix
     with col2:
         fig, axes = plt.subplots(1, 3, figsize=(18, 5))
 
         sns.barplot(data=df_eval, x='Model', y=metric_option, palette="viridis", ax=axes[0])
         axes[0].set_ylim(0, 1)
-        axes[0].set_title("Perbandingan {}".format(metric_option))
+        axes[0].set_title(f"Perbandingan {metric_option}")
         for i, val in enumerate(df_eval[metric_option]):
             axes[0].text(i, val + 0.02, f"{val:.2f}", ha='center')
 
-        sns.heatmap(confusion_matrix(y_test, y_pred_c45), annot=True, fmt='d', cmap='Blues', ax=axes[1])
+        sns.heatmap(cm_c45, annot=True, fmt='d', cmap='Blues', ax=axes[1])
         axes[1].set_title("C4.5")
 
-        sns.heatmap(confusion_matrix(y_test, y_pred_nb), annot=True, fmt='d', cmap='Greens', ax=axes[2])
+        sns.heatmap(cm_nb, annot=True, fmt='d', cmap='Greens', ax=axes[2])
         axes[2].set_title("Naive Bayes")
 
         plt.tight_layout()
         st.pyplot(fig)
 
-        # Download Grafik
         buf = io.BytesIO()
         fig.savefig(buf, format="png")
         buf.seek(0)
