@@ -165,14 +165,24 @@ if st.session_state.file_uploaded:
 - PO **Tercapai** (prediksi `1`): **{c45_tercapai} data**  
 - PO **Tidak Tercapai** (prediksi `0`): **{c45_tidak} data**
 """)
-
+# Bar Chart untuk C4.5
+    fig_c45, ax1 = plt.subplots()
+    ax1.bar(['PO Tercapai', 'PO Tidak Tercapai'],
+            [c45_tercapai, c45_tidak], color=['#d62728', '#1f77b4'])
+    ax1.set_title(f"C4.5 Prediksi PO ({split_ratio})")
+    st.pyplot(fig_c45)
     with colB:
         st.markdown("#### 🔵 Naive Bayes")
         st.markdown(f"""
 - PO **Tercapai** (prediksi `1`): **{nb_tercapai} data**  
 - PO **Tidak Tercapai** (prediksi `0`): **{nb_tidak} data**
 """)
-
+# Bar Chart untuk Naive Bayes
+    fig_nb, ax2 = plt.subplots()
+    ax2.bar(['PO Tercapai', 'PO Tidak Tercapai'],
+            [nb_tercapai, nb_tidak], color=['#2ca02c', '#9467bd'])
+    ax2.set_title(f"Naive Bayes Prediksi PO ({split_ratio})")
+    st.pyplot(fig_nb)
     # ----------------- DASHBOARD LAYOUT -----------------
     col1, col2 = st.columns([1, 2])
 
