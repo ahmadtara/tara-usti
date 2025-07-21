@@ -157,35 +157,28 @@ if st.session_state.file_uploaded:
     nb_tidak = sum(y_pred_nb == 0)
 
     st.markdown("### 🎯 Hasil Prediksi PO Tercapai & Tidak Tercapai")
-    colA, colB = st.columns(2)
+   # Buat 2 kolom untuk tampilan horizontal
+col1, col2 = st.columns(2)
 
-    with colA:
-        st.markdown("#### 🔴 C4.5")
-        st.markdown(f"""
-- PO **Tercapai** (prediksi `1`): **{c45_tercapai} data**  
-- PO **Tidak Tercapai** (prediksi `0`): **{c45_tidak} data**
-""")
-# Bar Chart untuk C4.5
-    fig1_ax1, ax1 = plt.subplots(figsize=(2.5, 2))
-    ax1.bar(['PO Tercapai', 'PO Tidak Tercapai'],
-            [c45_tercapai, c45_tidak], color=['#d62728', '#1f77b4'])
-    ax1.set_title(f"C4.5 Prediksi PO ({split_ratio})", fontsize=8)
+with col1:
+    st.markdown("#### 🔴 C4.5")
+    st.markdown(f"- PO **Tercapai**: **{c45_tercapai} data**  \n- PO **Tidak Tercapai**: **{c45_tidak} data**")
+
+    fig1, ax1 = plt.subplots(figsize=(2.5, 2))
+    ax1.bar(['PO Tercapai', 'PO Tidak Tercapai'], [c45_tercapai, c45_tidak], color=['#d62728', '#1f77b4'])
+    ax1.set_title("C4.5 (Split 90:10)", fontsize=8)
     ax1.tick_params(axis='x', labelsize=8)
     ax1.tick_params(axis='y', labelsize=8)
     plt.tight_layout()
     st.pyplot(fig1)
 
-    with colB:
-        st.markdown("#### 🔵 Naive Bayes")
-        st.markdown(f"""
-- PO **Tercapai** (prediksi `1`): **{nb_tercapai} data**  
-- PO **Tidak Tercapai** (prediksi `0`): **{nb_tidak} data**
-""")
-# Bar Chart untuk Naive Bayes
+with col2:
+    st.markdown("#### 🟢 Naive Bayes")
+    st.markdown(f"- PO **Tercapai**: **{nb_tercapai} data**  \n- PO **Tidak Tercapai**: **{nb_tidak} data**")
+
     fig2, ax2 = plt.subplots(figsize=(2.5, 2))
-    ax2.bar(['PO Tercapai', 'PO Tidak Tercapai'],
-            [nb_tercapai, nb_tidak], color=['#2ca02c', '#9467bd'])
-    ax2.set_title(f"Naive Bayes Prediksi PO ({split_ratio})", fontsize=8)
+    ax2.bar(['PO Tercapai', 'PO Tidak Tercapai'], [nb_tercapai, nb_tidak], color=['#2ca02c', '#1f77b4'])
+    ax2.set_title("Naive Bayes (Split 90:10)", fontsize=8)
     ax2.tick_params(axis='x', labelsize=8)
     ax2.tick_params(axis='y', labelsize=8)
     plt.tight_layout()
