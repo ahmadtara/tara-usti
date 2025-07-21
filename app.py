@@ -166,7 +166,7 @@ if st.session_state.file_uploaded:
 - PO **Tidak Tercapai** (prediksi `0`): **{c45_tidak} data**
 """)
 # Bar Chart untuk C4.5
-     fig_c45, ax1 = plt.subplots(figsize=(4, 3))  # Ukuran lebih kecil
+    fig_c45, ax1 = plt.subplots(figsize=(4, 3))
     ax1.bar(['PO Tercapai', 'PO Tidak Tercapai'],
             [c45_tercapai, c45_tidak], color=['#d62728', '#1f77b4'])
     ax1.set_title(f"C4.5 Prediksi PO ({split_ratio})", fontsize=10)
