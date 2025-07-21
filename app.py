@@ -173,7 +173,7 @@ if st.session_state.file_uploaded:
     ax1.tick_params(axis='x', labelsize=8)
     ax1.tick_params(axis='y', labelsize=8)
     plt.tight_layout()
-     st.pyplot(fig1)
+    st.pyplot(fig1)
 
     with colB:
         st.markdown("#### 🔵 Naive Bayes")
