@@ -134,8 +134,6 @@ if st.session_state.file_uploaded:
     TN_nb = cm_nb[0, 0]
     acc_nb = (TP_nb + TN_nb) / sum(sum(cm_nb))
 
-    st.markdown("### 📌 Contoh Hasil Prediksi Seperti Tabel")
-
     st.markdown("#### 🔴 C4.5")
     st.markdown(f"""
 - Pred: PO | Pred: Tidak PO  
