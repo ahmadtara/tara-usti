@@ -13,7 +13,7 @@ import io
 st.set_page_config(page_title="Dashboard Analisis C4.5 vs Naive Bayes", layout="wide")
 sns.set_theme(style="whitegrid")
 
-# DARK MODE CSS
+# ----------------- DARK MODE CSS -----------------
 dark_css = """
 <style>
 body {
@@ -37,7 +37,7 @@ div[data-testid="stHorizontalBlock"] > div {
 st.markdown(dark_css, unsafe_allow_html=True)
 
 # ----------------- TITLE -----------------
-st.markdown("<h1 style='text-align:center; color:#4CAF50;'>📊 Dashboard Analisis C4.5 vs Naive Bayes</h1>", unsafe_allow_html=True)
+st.markdown("<h1 style='text-align:center; color:#4CAF50;'>\ud83d\udcca Dashboard Analisis C4.5 vs Naive Bayes</h1>", unsafe_allow_html=True)
 st.markdown("<p style='text-align:center; font-size:18px;'>Prediksi Ketercapaian Target PO - MyRepublic</p>", unsafe_allow_html=True)
 st.markdown("---")
 
@@ -47,14 +47,14 @@ if "file_uploaded" not in st.session_state:
 
 # ----------------- UPLOAD SECTION -----------------
 if not st.session_state.file_uploaded:
-    uploaded_file = st.file_uploader("🗂 Upload File Excel", type=["xlsx"])
+    uploaded_file = st.file_uploader("\ud83d\uddc2 Upload File Excel", type=["xlsx"])
     if uploaded_file is not None:
         st.session_state.file_uploaded = True
         st.session_state.uploaded_file = uploaded_file
         st.rerun()
 else:
     uploaded_file = st.session_state.uploaded_file
-    st.success(f"✅ File berhasil diunggah: {uploaded_file.name}")
+    st.success(f"\u2705 File berhasil diunggah: {uploaded_file.name}")
 
 # ----------------- MAIN PROCESS -----------------
 if st.session_state.file_uploaded:
@@ -75,7 +75,7 @@ if st.session_state.file_uploaded:
     df['hp_cluster_norm'] = MinMaxScaler().fit_transform(df[['hp_cluster']])
 
     # Sidebar controls
-    st.sidebar.header("⚙️ Pengaturan Analisis")
+    st.sidebar.header("\u2699\ufe0f Pengaturan Analisis")
     split_option = st.sidebar.radio("Pilih Rasio Split Data", ["80:20", "70:30", "90:10"])
     metric_option = st.sidebar.radio("Pilih Metrik Evaluasi", ["Accuracy", "Precision", "Recall", "F1-score"])
 
@@ -86,7 +86,7 @@ if st.session_state.file_uploaded:
     y = df['label']
 
     # Training model
-    with st.spinner("🔄 Training model... Mohon tunggu"):
+    with st.spinner("\ud83d\udd04 Training model... Mohon tunggu"):
         X_train, X_test, y_train, y_test = train_test_split(X, y, stratify=y, test_size=split_ratio, random_state=42)
 
         model_c45 = DecisionTreeClassifier(criterion='entropy', random_state=42)
@@ -116,39 +116,35 @@ if st.session_state.file_uploaded:
 
     best = df_eval.sort_values(by=metric_option, ascending=False).iloc[0]
 
-    # ----------------- CONFUSION MATRIX & ANALISIS -----------------
+    # ----------------- CONFUSION MATRIX -----------------
     cm_c45 = confusion_matrix(y_test, y_pred_c45)
     cm_nb = confusion_matrix(y_test, y_pred_nb)
 
-    # C4.5
-    TP_c45 = cm_c45[1, 1]
-    FN_c45 = cm_c45[1, 0]
-    FP_c45 = cm_c45[0, 1]
-    TN_c45 = cm_c45[0, 0]
-    acc_c45 = (TP_c45 + TN_c45) / sum(sum(cm_c45))
+    # ----------------- PERHITUNGAN MANUAL -----------------
+    def acc_manual(cm):
+        TP = cm[1, 1]
+        FN = cm[1, 0]
+        FP = cm[0, 1]
+        TN = cm[0, 0]
+        acc = (TP + TN) / cm.sum()
+        return TP, FN, FP, TN, acc
 
-    # Naive Bayes
-    TP_nb = cm_nb[1, 1]
-    FN_nb = cm_nb[1, 0]
-    FP_nb = cm_nb[0, 1]
-    TN_nb = cm_nb[0, 0]
-    acc_nb = (TP_nb + TN_nb) / sum(sum(cm_nb))
+    TP_c45, FN_c45, FP_c45, TN_c45, acc_c45 = acc_manual(cm_c45)
+    TP_nb, FN_nb, FP_nb, TN_nb, acc_nb = acc_manual(cm_nb)
 
-    st.markdown("#### 🔴 C4.5")
+    st.markdown("#### \ud83d\udd34 C4.5")
     st.markdown(f"""
-- Pred: PO | Pred: Tidak PO  
-  - Actual PO: {TP_c45} (TP), {FN_c45} (FN)  
-  - Actual Bukan: {FP_c45} (FP), {TN_c45} (TN)  
-- **Accuracy = (TP + TN) / Total = ({TP_c45} + {TN_c45}) / {sum(sum(cm_c45))} = {acc_c45 * 100:.1f}%**
-""")
+    - Actual PO: {TP_c45} (TP), {FN_c45} (FN)  
+    - Actual Bukan: {FP_c45} (FP), {TN_c45} (TN)  
+    - **Accuracy = {acc_c45 * 100:.1f}%**
+    """)
 
-    st.markdown("#### 🔵 Naive Bayes")
+    st.markdown("#### \ud83d\udd35 Naive Bayes")
     st.markdown(f"""
-- Pred: PO | Pred: Tidak PO  
-  - Actual PO: {TP_nb} (TP), {FN_nb} (FN)  
-  - Actual Bukan: {FP_nb} (FP), {TN_nb} (TN)  
-- **Accuracy = (TP + TN) / Total = ({TP_nb} + {TN_nb}) / {sum(sum(cm_nb))} = {acc_nb * 100:.1f}%**
-""")
+    - Actual PO: {TP_nb} (TP), {FN_nb} (FN)  
+    - Actual Bukan: {FP_nb} (FP), {TN_nb} (TN)  
+    - **Accuracy = {acc_nb * 100:.1f}%**
+    """)
 
     # ----------------- HASIL PREDIKSI PO -----------------
     c45_tercapai = sum(y_pred_c45 == 1)
@@ -156,40 +152,40 @@ if st.session_state.file_uploaded:
     nb_tercapai = sum(y_pred_nb == 1)
     nb_tidak = sum(y_pred_nb == 0)
 
-    st.markdown("### 🎯 Hasil Prediksi PO Tercapai & Tidak Tercapai")
-   # Buat 2 kolom untuk tampilan horizontal
-col1, col2 = st.columns(2)
+    st.markdown("### \ud83c\udf1f Hasil Prediksi PO Tercapai & Tidak Tercapai")
+    col1, col2 = st.columns(2)
 
-with col1:
-    st.markdown("#### 🔴 C4.5")
-    st.markdown(f"- PO **Tercapai**: **{c45_tercapai} data**  \n- PO **Tidak Tercapai**: **{c45_tidak} data**")
+    with col1:
+        st.markdown("#### \ud83d\udd34 C4.5")
+        st.markdown(f"- PO **Tercapai**: **{c45_tercapai} data**  \n- PO **Tidak Tercapai**: **{c45_tidak} data**")
 
-    fig1, ax1 = plt.subplots(figsize=(2.5, 2))
-    ax1.bar(['PO Tercapai', 'PO Tidak Tercapai'], [c45_tercapai, c45_tidak], color=['#d62728', '#1f77b4'])
-    ax1.set_title("C4.5 (Split 90:10)", fontsize=8)
-    ax1.tick_params(axis='x', labelsize=8)
-    ax1.tick_params(axis='y', labelsize=8)
-    plt.tight_layout()
-    st.pyplot(fig1)
+        fig1, ax1 = plt.subplots(figsize=(2.5, 2))
+        ax1.bar(['PO Tercapai', 'PO Tidak Tercapai'], [c45_tercapai, c45_tidak], color=['#d62728', '#1f77b4'])
+        ax1.set_title("C4.5", fontsize=8)
+        ax1.tick_params(axis='x', labelsize=8)
+        ax1.tick_params(axis='y', labelsize=8)
+        plt.tight_layout()
+        st.pyplot(fig1)
 
-with col2:
-    st.markdown("#### 🟢 Naive Bayes")
-    st.markdown(f"- PO **Tercapai**: **{nb_tercapai} data**  \n- PO **Tidak Tercapai**: **{nb_tidak} data**")
+    with col2:
+        st.markdown("#### \ud83d\udfe2 Naive Bayes")
+        st.markdown(f"- PO **Tercapai**: **{nb_tercapai} data**  \n- PO **Tidak Tercapai**: **{nb_tidak} data**")
 
-    fig2, ax2 = plt.subplots(figsize=(2.5, 2))
-    ax2.bar(['PO Tercapai', 'PO Tidak Tercapai'], [nb_tercapai, nb_tidak], color=['#2ca02c', '#1f77b4'])
-    ax2.set_title("Naive Bayes (Split 90:10)", fontsize=8)
-    ax2.tick_params(axis='x', labelsize=8)
-    ax2.tick_params(axis='y', labelsize=8)
-    plt.tight_layout()
-    st.pyplot(fig2)
+        fig2, ax2 = plt.subplots(figsize=(2.5, 2))
+        ax2.bar(['PO Tercapai', 'PO Tidak Tercapai'], [nb_tercapai, nb_tidak], color=['#2ca02c', '#1f77b4'])
+        ax2.set_title("Naive Bayes", fontsize=8)
+        ax2.tick_params(axis='x', labelsize=8)
+        ax2.tick_params(axis='y', labelsize=8)
+        plt.tight_layout()
+        st.pyplot(fig2)
+
     # ----------------- DASHBOARD LAYOUT -----------------
     col1, col2 = st.columns([1, 2])
 
     with col1:
         st.markdown(f"""
         <div style="background:#263238; padding:20px; border-radius:12px; color:white; box-shadow:0 4px 8px rgba(0,0,0,0.3);">
-        <h3 style='color:#4CAF50;'>📌 Ringkasan Analisis</h3>
+        <h3 style='color:#4CAF50;'>\ud83d\udccc Ringkasan Analisis</h3>
         <p><b>Metrik:</b> {metric_option}</p>
         <p><b>Model Terbaik:</b> <span style='color:#81C784;'>{best['Model']}</span></p>
         <p><b>Skor:</b> {best[metric_option]:.4f}</p>
@@ -197,7 +193,7 @@ with col2:
         """, unsafe_allow_html=True)
 
         csv = df_eval.to_csv(index=False).encode('utf-8')
-        st.download_button("⬇️ Download Hasil (CSV)", data=csv, file_name="hasil_evaluasi.csv", mime="text/csv")
+        st.download_button("\u2b07\ufe0f Download Hasil (CSV)", data=csv, file_name="hasil_evaluasi.csv", mime="text/csv")
 
     with col2:
         fig, axes = plt.subplots(1, 3, figsize=(18, 5))
@@ -220,8 +216,7 @@ with col2:
         buf = io.BytesIO()
         fig.savefig(buf, format="png")
         buf.seek(0)
-        st.download_button("⬇️ Download Grafik (PNG)", data=buf, file_name="grafik_dashboard.png", mime="image/png")
+        st.download_button("\u2b07\ufe0f Download Grafik (PNG)", data=buf, file_name="grafik_dashboard.png", mime="image/png")
 
-    # Tabel Evaluasi
-    st.markdown("<h3 style='color:#81C784;'>📄 Tabel Evaluasi Lengkap</h3>", unsafe_allow_html=True)
+    st.markdown("<h3 style='color:#81C784;'>\ud83d\udcc4 Tabel Evaluasi Lengkap</h3>", unsafe_allow_html=True)
     st.dataframe(df_eval.style.highlight_max(axis=0, color='lightgreen'))
