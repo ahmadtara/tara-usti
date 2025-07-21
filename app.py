@@ -189,7 +189,7 @@ if st.session_state.file_uploaded:
     ax2.tick_params(axis='x', labelsize=8)
     ax2.tick_params(axis='y', labelsize=8)
     plt.tight_layout()
-     st.pyplot(fig2)
+    st.pyplot(fig2)
     # ----------------- DASHBOARD LAYOUT -----------------
     col1, col2 = st.columns([1, 2])
 
