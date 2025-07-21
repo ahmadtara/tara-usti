@@ -161,7 +161,7 @@ if st.session_state.file_uploaded:
 
         fig1, ax1 = plt.subplots(figsize=(2.5, 2))
         ax1.bar(['PO Tercapai', 'PO Tidak Tercapai'], [c45_tercapai, c45_tidak], color=['#d62728', '#1f77b4'])
-        ax1.set_title("C4.5", fontsize=8)
+        ax1.set_title("C4.5 ()", fontsize=8)
         ax1.tick_params(axis='x', labelsize=8)
         ax1.tick_params(axis='y', labelsize=8)
         plt.tight_layout()
@@ -173,7 +173,7 @@ if st.session_state.file_uploaded:
 
         fig2, ax2 = plt.subplots(figsize=(2.5, 2))
         ax2.bar(['PO Tercapai', 'PO Tidak Tercapai'], [nb_tercapai, nb_tidak], color=['#2ca02c', '#1f77b4'])
-        ax2.set_title("Naive Bayes", fontsize=8)
+        ax2.set_title("Naive Bayes ()", fontsize=8)
         ax2.tick_params(axis='x', labelsize=8)
         ax2.tick_params(axis='y', labelsize=8)
         plt.tight_layout()
