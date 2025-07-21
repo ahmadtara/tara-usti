@@ -166,11 +166,15 @@ if st.session_state.file_uploaded:
 - PO **Tidak Tercapai** (prediksi `0`): **{c45_tidak} data**
 """)
 # Bar Chart untuk C4.5
-    fig_c45, ax1 = plt.subplots()
+     fig_c45, ax1 = plt.subplots(figsize=(4, 3))  # Ukuran lebih kecil
     ax1.bar(['PO Tercapai', 'PO Tidak Tercapai'],
             [c45_tercapai, c45_tidak], color=['#d62728', '#1f77b4'])
-    ax1.set_title(f"C4.5 Prediksi PO ({split_ratio})")
+    ax1.set_title(f"C4.5 Prediksi PO ({split_ratio})", fontsize=10)
+    ax1.tick_params(axis='x', labelsize=9)
+    ax1.tick_params(axis='y', labelsize=9)
+    plt.tight_layout()
     st.pyplot(fig_c45)
+
     with colB:
         st.markdown("#### 🔵 Naive Bayes")
         st.markdown(f"""
@@ -178,10 +182,13 @@ if st.session_state.file_uploaded:
 - PO **Tidak Tercapai** (prediksi `0`): **{nb_tidak} data**
 """)
 # Bar Chart untuk Naive Bayes
-    fig_nb, ax2 = plt.subplots()
+    fig_nb, ax2 = plt.subplots(figsize=(4, 3))
     ax2.bar(['PO Tercapai', 'PO Tidak Tercapai'],
             [nb_tercapai, nb_tidak], color=['#2ca02c', '#9467bd'])
-    ax2.set_title(f"Naive Bayes Prediksi PO ({split_ratio})")
+    ax2.set_title(f"Naive Bayes Prediksi PO ({split_ratio})", fontsize=10)
+    ax2.tick_params(axis='x', labelsize=9)
+    ax2.tick_params(axis='y', labelsize=9)
+    plt.tight_layout()
     st.pyplot(fig_nb)
     # ----------------- DASHBOARD LAYOUT -----------------
     col1, col2 = st.columns([1, 2])
