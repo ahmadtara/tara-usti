@@ -151,27 +151,46 @@ if st.session_state.file_uploaded:
 """)
 
     # ----------------- HASIL PREDIKSI PO -----------------
-    c45_tercapai = sum(y_pred_c45 == 1)
-    c45_tidak = sum(y_pred_c45 == 0)
-    nb_tercapai = sum(y_pred_nb == 1)
-    nb_tidak = sum(y_pred_nb == 0)
+    # ----------------- HASIL PREDIKSI PO -----------------
+c45_tercapai = sum(y_pred_c45 == 1)
+c45_tidak = sum(y_pred_c45 == 0)
+nb_tercapai = sum(y_pred_nb == 1)
+nb_tidak = sum(y_pred_nb == 0)
 
-    st.markdown("### 🎯 Hasil Prediksi PO Tercapai & Tidak Tercapai")
-    colA, colB = st.columns(2)
+st.markdown("### 🎯 Hasil Prediksi PO Tercapai & Tidak Tercapai")
+colA, colB = st.columns(2)
 
-    with colA:
-        st.markdown("#### 🔴 C4.5")
-        st.markdown(f"""
+# ---- C4.5 ----
+with colA:
+    st.markdown("#### 🔴 C4.5")
+    st.markdown(f"""
 - PO **Tercapai** (prediksi `1`): **{c45_tercapai} data**  
 - PO **Tidak Tercapai** (prediksi `0`): **{c45_tidak} data**
 """)
+    # Bar Chart Kecil C4.5
+    fig_c45, ax_c45 = plt.subplots(figsize=(3, 3))
+    sns.barplot(x=['Tercapai', 'Tidak'], y=[c45_tercapai, c45_tidak], palette=['#4CAF50', '#E53935'], ax=ax_c45)
+    ax_c45.set_title("Distribusi C4.5", fontsize=10)
+    ax_c45.set_ylabel("")
+    for i, v in enumerate([c45_tercapai, c45_tidak]):
+        ax_c45.text(i, v + 0.2, str(v), ha='center', fontsize=9)
+    st.pyplot(fig_c45)
 
-    with colB:
-        st.markdown("#### 🔵 Naive Bayes")
-        st.markdown(f"""
+# ---- Naive Bayes ----
+with colB:
+    st.markdown("#### 🔵 Naive Bayes")
+    st.markdown(f"""
 - PO **Tercapai** (prediksi `1`): **{nb_tercapai} data**  
 - PO **Tidak Tercapai** (prediksi `0`): **{nb_tidak} data**
 """)
+    # Bar Chart Kecil Naive Bayes
+    fig_nb, ax_nb = plt.subplots(figsize=(3, 3))
+    sns.barplot(x=['Tercapai', 'Tidak'], y=[nb_tercapai, nb_tidak], palette=['#4CAF50', '#E53935'], ax=ax_nb)
+    ax_nb.set_title("Distribusi Naive Bayes", fontsize=10)
+    ax_nb.set_ylabel("")
+    for i, v in enumerate([nb_tercapai, nb_tidak]):
+        ax_nb.text(i, v + 0.2, str(v), ha='center', fontsize=9)
+    st.pyplot(fig_nb)
 
     # ----------------- DASHBOARD LAYOUT -----------------
     col1, col2 = st.columns([1, 2])
