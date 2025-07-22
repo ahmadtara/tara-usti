@@ -1,200 +1,191 @@
-import streamlit as st
-import pandas as pd
-import seaborn as sns
-import matplotlib.pyplot as plt
-from sklearn.model_selection import train_test_split
-from sklearn.preprocessing import LabelEncoder, MinMaxScaler
-from sklearn.tree import DecisionTreeClassifier
-from sklearn.naive_bayes import GaussianNB
-from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score, confusion_matrix
-import io
+import zipfile
+import os
+import math
+import requests
+from xml.etree import ElementTree as ET
+import ezdxf
+from pyproj import Transformer
 
-# ----------------- CONFIG -----------------
-st.set_page_config(page_title="Dashboard Analisis C4.5 vs Naive Bayes", layout="wide")
-sns.set_theme(style="whitegrid")
+HERE_API_KEY = "iWCrFicKYt9_AOCtg76h76MlqZkVTn94eHbBl_cE8m0"
 
-# DARK MODE CSS
-dark_css = """
-<style>
-body { background-color: #121212; color: #E0E0E0; }
-.sidebar .sidebar-content { background: #1E1E1E; }
-.stButton > button { background-color: #4CAF50; color: white; border-radius: 8px; }
-div[data-testid="stHorizontalBlock"] > div { border-radius: 12px; padding: 12px; }
-h1, h2, h3, h4, h5 { color: #81C784; }
-</style>
-"""
-st.markdown(dark_css, unsafe_allow_html=True)
+# Transformer dari WGS84 ke UTM zona 60 Selatan (EPSG:32760)
+transformer = Transformer.from_crs("EPSG:4326", "EPSG:32760", always_xy=True)
 
-# ----------------- TITLE -----------------
-st.markdown("<h1 style='text-align:center; color:#4CAF50;'>📊 Dashboard Analisis C4.5 vs Naive Bayes</h1>", unsafe_allow_html=True)
-st.markdown("<p style='text-align:center; font-size:18px;'>Prediksi Ketercapaian Target PO - MyRepublic</p>", unsafe_allow_html=True)
-st.markdown("---")
+def extract_kmz(kmz_path, extract_dir):
+    with zipfile.ZipFile(kmz_path, 'r') as kmz_file:
+        kmz_file.extractall(extract_dir)
+    return os.path.join(extract_dir, "doc.kml")
 
-# ----------------- SESSION STATE -----------------
-if "file_uploaded" not in st.session_state:
-    st.session_state.file_uploaded = False
+def parse_kml(kml_path):
+    ns = {'kml': 'http://www.opengis.net/kml/2.2'}
+    tree = ET.parse(kml_path)
+    root = tree.getroot()
+    placemarks = root.findall('.//kml:Placemark', ns)
+    points = []
+    for pm in placemarks:
+        name = pm.find('kml:name', ns)
+        coord = pm.find('.//kml:coordinates', ns)
+        if name is not None and coord is not None:
+            name_text = name.text.strip()
+            coord_text = coord.text.strip()
+            lon, lat, *_ = coord_text.split(',')
+            points.append({
+                'name': name_text,
+                'latitude': float(lat),
+                'longitude': float(lon)
+            })
+    return points
 
-# ----------------- UPLOAD SECTION -----------------
-if not st.session_state.file_uploaded:
-    uploaded_file = st.file_uploader("🗂 Upload File Excel", type=["xlsx"])
-    if uploaded_file is not None:
-        st.session_state.file_uploaded = True
-        st.session_state.uploaded_file = uploaded_file
-        st.rerun()
-else:
-    uploaded_file = st.session_state.uploaded_file
-    st.success(f"✅ File berhasil diunggah: {uploaded_file.name}")
-    if st.button("🔄 Reset File"):
-        st.session_state.file_uploaded = False
-        st.rerun()
+def parse_boundaries(kml_path):
+    ns = {'kml': 'http://www.opengis.net/kml/2.2'}
+    tree = ET.parse(kml_path)
+    root = tree.getroot()
+    boundaries = []
 
-# ----------------- MAIN PROCESS -----------------
-if st.session_state.file_uploaded:
-    df_raw = pd.read_excel(uploaded_file)
+    for folder in root.findall(".//kml:Folder", ns):
+        name_tag = folder.find('kml:name', ns)
+        if name_tag is not None and name_tag.text.strip().upper() == "BOUNDARY":
+            placemarks = folder.findall(".//kml:Placemark", ns)
+            for pm in placemarks:
+                coords = pm.find('.//kml:coordinates', ns)
+                if coords is not None:
+                    coord_list = []
+                    for pair in coords.text.strip().split():
+                        lon, lat, *_ = map(float, pair.split(','))
+                        coord_list.append(latlon_to_xy(lat, lon))
+                    boundaries.append(coord_list)
+    return boundaries
 
-    # Preprocessing
-    df = df_raw.rename(columns={
-        'Topology': 'topologi',
-        'Vendor': 'vendor',
-        'HP Cluster\n(SND Wajib Isi)': 'hp_cluster',
-        'Status PO Cluster (SND Wajib Isi)': 'status_po'
-    })[['topologi', 'vendor', 'hp_cluster', 'status_po']].dropna()
+def haversine(lat1, lon1, lat2, lon2):
+    R = 6371000
+    phi1 = math.radians(lat1)
+    phi2 = math.radians(lat2)
+    delta_phi = math.radians(lat2 - lat1)
+    delta_lambda = math.radians(lon2 - lon1)
+    a = math.sin(delta_phi/2)**2 + math.cos(phi1)*math.cos(phi2)*math.sin(delta_lambda/2)**2
+    c = 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
+    return R * c
 
-    df['status_po'] = df['status_po'].str.lower().str.strip()
-    df['label'] = df['status_po'].apply(lambda x: 1 if x == 'done' else 0)
-    df['topologi_enc'] = LabelEncoder().fit_transform(df['topologi'].astype(str))
-    df['vendor_enc'] = LabelEncoder().fit_transform(df['vendor'].astype(str))
-    df['hp_cluster_norm'] = MinMaxScaler().fit_transform(df[['hp_cluster']])
+def classify_points(points):
+    classified = {
+        "FDT": [], "FAT": [], "POLE": [], "HP_COVER": [],
+        "NEW_POLE": [], "EXISTING_POLE": []
+    }
+    for p in points:
+        name = p['name'].upper()
+        if "FDT" in name:
+            classified["FDT"].append(p)
+        elif "FAT" in name:
+            classified["FAT"].append(p)
+        elif "HP" in name or "HOME" in name or "COVER" in name:
+            classified["HP_COVER"].append(p)
+        elif "NEW POLE" in name:
+            classified["NEW_POLE"].append(p)
+        elif "EXISTING" in name or "EMR" in name:
+            classified["EXISTING_POLE"].append(p)
+        elif "P" in name:
+            classified["POLE"].append(p)
+    return classified
 
-    # Sidebar controls
-    st.sidebar.header("⚙️ Pengaturan Analisis")
-    split_option = st.sidebar.radio("Pilih Rasio Split Data", ["80:20", "70:30", "90:10"])
-    metric_option = st.sidebar.radio("Pilih Metrik Evaluasi", ["Accuracy", "Precision", "Recall", "F1-score"])
+def latlon_to_xy(lat, lon):
+    x, y = transformer.transform(lon, lat)
+    return x, y
 
-    split_map = {"80:20": 0.2, "70:30": 0.3, "90:10": 0.1}
-    split_ratio = split_map[split_option]
+def find_nearest_pole(hp, poles):
+    nearest = None
+    min_dist = float('inf')
+    for p in poles:
+        d = haversine(hp['latitude'], hp['longitude'], p['latitude'], p['longitude'])
+        if d < min_dist:
+            min_dist = d
+            nearest = p
+    return nearest
 
-    X = df[['topologi_enc', 'vendor_enc', 'hp_cluster_norm']]
-    y = df['label']
+def get_bounds(points):
+    lats = [p["latitude"] for p in points]
+    lons = [p["longitude"] for p in points]
+    return min(lats), min(lons), max(lats), max(lons)
 
-    # Training model
-    with st.spinner("🔄 Training model... Mohon tunggu"):
-        X_train, X_test, y_train, y_test = train_test_split(X, y, stratify=y, test_size=split_ratio, random_state=42)
+def fetch_roads_from_here(min_lat, min_lon, max_lat, max_lon):
+    url = (
+        f"https://vector.hereapi.com/v2/vectortiles/base/mc/14/tiles.json"
+        f"?apikey={HERE_API_KEY}"
+        f"&bbox={min_lat},{min_lon},{max_lat},{max_lon}"
+    )
+    response = requests.get(url)
+    return []
 
-        model_c45 = DecisionTreeClassifier(criterion='entropy', random_state=42)
-        model_c45.fit(X_train, y_train)
-        y_pred_c45 = model_c45.predict(X_test)
+def draw_boundaries(msp, boundaries):
+    for polygon in boundaries:
+        if polygon[0] != polygon[-1]:
+            polygon.append(polygon[0])
+        msp.add_lwpolyline(polygon, close=True, dxfattribs={"layer": "FAT AREA"})
 
-        model_nb = GaussianNB()
-        model_nb.fit(X_train, y_train)
-        y_pred_nb = model_nb.predict(X_test)
+def draw_dxf(classified, boundaries, road_lines, output_path):
+    doc = ezdxf.new(dxfversion='R2010')
+    msp = doc.modelspace()
 
-    # Evaluasi metrik
-    def evaluate(y_true, y_pred):
-        return {
-            "Accuracy": accuracy_score(y_true, y_pred),
-            "Precision": precision_score(y_true, y_pred),
-            "Recall": recall_score(y_true, y_pred),
-            "F1-score": f1_score(y_true, y_pred)
-        }
+    hp_coords = []
 
-    c45_result = evaluate(y_test, y_pred_c45)
-    nb_result = evaluate(y_test, y_pred_nb)
+    for hp in classified["HP_COVER"]:
+        x, y = latlon_to_xy(hp["latitude"], hp["longitude"])
+        hp_coords.append((x, y))
+        size = 2
+        msp.add_lwpolyline([
+            (x, y),
+            (x + size, y),
+            (x + size, y + size),
+            (x, y + size),
+            (x, y)
+        ], close=True, dxfattribs={"layer": "FEATURE_LABEL"})
 
-    df_eval = pd.DataFrame([
-        {"Model": "C4.5", **c45_result},
-        {"Model": "Naive Bayes", **nb_result}
-    ])
+        nearest = find_nearest_pole(hp, classified["POLE"])
+        if nearest:
+            nx, ny = latlon_to_xy(nearest["latitude"], nearest["longitude"])
+            msp.add_line((x + size/2, y + size/2), (nx, ny), dxfattribs={"layer": "LABEL_CABEL"})
 
-    best = df_eval.sort_values(by=metric_option, ascending=False).iloc[0]
+    if len(hp_coords) > 1:
+        hp_coords_sorted = sorted(hp_coords, key=lambda k: (k[1], k[0]))
+        msp.add_lwpolyline(hp_coords_sorted, dxfattribs={"layer": "JALUR_HP"})
 
-    # Confusion Matrix
-    cm_c45 = confusion_matrix(y_test, y_pred_c45)
-    cm_nb = confusion_matrix(y_test, y_pred_nb)
+    draw_boundaries(msp, boundaries)
 
-    # ----------------- HASIL PREDIKSI PO -----------------
-    st.markdown("### 🎯 Hasil Prediksi PO Tercapai & Tidak Tercapai")
-    colA, colB = st.columns(2)
+    for line in road_lines:
+        coords = [latlon_to_xy(lat, lon) for lat, lon in line]
+        msp.add_lwpolyline(coords, dxfattribs={"layer": "JALAN_MAPS"})
 
-    c45_tercapai = sum(y_pred_c45 == 1)
-    c45_tidak = sum(y_pred_c45 == 0)
-    nb_tercapai = sum(y_pred_nb == 1)
-    nb_tidak = sum(y_pred_nb == 0)
+    for fat in classified["FAT"]:
+        x, y = latlon_to_xy(fat["latitude"], fat["longitude"])
+        msp.add_text(fat["name"], dxfattribs={"layer": "FAT"}).set_pos((x, y), align='CENTER')
 
-    # ---- C4.5 ----
-    with colA:
-        sub1, sub2 = st.columns([1, 1])
-        with sub1:
-            st.markdown("#### 🔴 C4.5")
-            st.markdown(f"- **Tercapai:** {c45_tercapai}  \n- **Tidak:** {c45_tidak}")
-        with sub2:
-            fig_c45, ax_c45 = plt.subplots(figsize=(2.2, 2))
-            sns.barplot(x=['Tercapai', 'Tidak'], y=[c45_tercapai, c45_tidak],
-                        palette=['#4CAF50', '#E53935'], ax=ax_c45)
-            ax_c45.set_ylabel("")
-            for i, v in enumerate([c45_tercapai, c45_tidak]):
-                ax_c45.text(i, v + 0.1, str(v), ha='center', fontsize=7)
-            ax_c45.tick_params(axis='both', labelsize=7)
-            st.pyplot(fig_c45)
+    for fdt in classified["FDT"]:
+        x, y = latlon_to_xy(fdt["latitude"], fdt["longitude"])
+        msp.add_text(fdt["name"], dxfattribs={"layer": "FDT"}).set_pos((x, y), align='CENTER')
 
-    # ---- Naive Bayes ----
-    with colB:
-        sub3, sub4 = st.columns([1, 1])
-        with sub3:
-            st.markdown("#### 🔵 Naive Bayes")
-            st.markdown(f"- **Tercapai:** {nb_tercapai}  \n- **Tidak:** {nb_tidak}")
-        with sub4:
-            fig_nb, ax_nb = plt.subplots(figsize=(2.2, 2))
-            sns.barplot(x=['Tercapai', 'Tidak'], y=[nb_tercapai, nb_tidak],
-                        palette=['#4CAF50', '#E53935'], ax=ax_nb)
-            ax_nb.set_ylabel("")
-            for i, v in enumerate([nb_tercapai, nb_tidak]):
-                ax_nb.text(i, v + 0.1, str(v), ha='center', fontsize=7)
-            ax_nb.tick_params(axis='both', labelsize=7)
-            st.pyplot(fig_nb)
+    for pole in classified["POLE"]:
+        x, y = latlon_to_xy(pole["latitude"], pole["longitude"])
+        msp.add_text(pole["name"], dxfattribs={"layer": "POLE"}).set_pos((x, y), align='CENTER')
 
-    # ----------------- LAYOUT ANALISIS & GRAFIK -----------------
-    st.markdown("---")
-    col1, col2 = st.columns([1, 2])
+    for pole in classified["NEW_POLE"]:
+        x, y = latlon_to_xy(pole["latitude"], pole["longitude"])
+        msp.add_text(pole["name"], dxfattribs={"layer": "NEW_POLE"}).set_pos((x, y), align='CENTER')
 
-    # Ringkasan Analisis
-    with col1:
-        st.markdown(f"""
-        <div style="background:#263238; padding:20px; border-radius:12px; color:white; box-shadow:0 4px 8px rgba(0,0,0,0.3);">
-        <h3 style='color:#4CAF50;'>📌 Ringkasan Analisis</h3>
-        <p><b>Metrik:</b> {metric_option}</p>
-        <p><b>Model Terbaik:</b> <span style='color:#81C784;'>{best['Model']}</span></p>
-        <p><b>Skor:</b> {best[metric_option]:.4f}</p>
-        </div>
-        """, unsafe_allow_html=True)
+    for pole in classified["EXISTING_POLE"]:
+        x, y = latlon_to_xy(pole["latitude"], pole["longitude"])
+        msp.add_text(pole["name"], dxfattribs={"layer": "EXISTING_POLE"}).set_pos((x, y), align='CENTER')
 
-        csv = df_eval.to_csv(index=False).encode('utf-8')
-        st.download_button("⬇️ Download Hasil (CSV)", data=csv, file_name="hasil_evaluasi.csv", mime="text/csv")
+    doc.saveas(output_path)
 
-    # Grafik besar
-    with col2:
-        fig, axes = plt.subplots(1, 3, figsize=(15, 4))
+def convert_kmz_to_dwg(kmz_path, output_dwg):
+    extract_dir = "temp_kmz"
+    os.makedirs(extract_dir, exist_ok=True)
+    kml_path = extract_kmz(kmz_path, extract_dir)
+    points = parse_kml(kml_path)
+    classified = classify_points(points)
+    boundaries = parse_boundaries(kml_path)
 
-        sns.barplot(data=df_eval, x='Model', y=metric_option, palette="viridis", ax=axes[0])
-        axes[0].set_ylim(0, 1)
-        axes[0].set_title(f"Perbandingan {metric_option}")
-        for i, val in enumerate(df_eval[metric_option]):
-            axes[0].text(i, val + 0.02, f"{val:.2f}", ha='center', fontsize=9)
+    min_lat, min_lon, max_lat, max_lon = get_bounds(points)
+    road_lines = fetch_roads_from_here(min_lat, min_lon, max_lat, max_lon)
 
-        sns.heatmap(cm_c45, annot=True, fmt='d', cmap='Blues', ax=axes[1])
-        axes[1].set_title("C4.5")
-
-        sns.heatmap(cm_nb, annot=True, fmt='d', cmap='Greens', ax=axes[2])
-        axes[2].set_title("Naive Bayes")
-
-        plt.tight_layout()
-        st.pyplot(fig)
-
-        buf = io.BytesIO()
-        fig.savefig(buf, format="png")
-        buf.seek(0)
-        st.download_button("⬇️ Download Grafik (PNG)", data=buf, file_name="grafik_dashboard.png", mime="image/png")
-
-    # ----------------- TABEL -----------------
-    st.markdown("<h3 style='color:#81C784;'>📄 Tabel Evaluasi Lengkap</h3>", unsafe_allow_html=True)
-    st.dataframe(df_eval.style.highlight_max(axis=0, color='lightgreen'))
+    draw_dxf(classified, boundaries, road_lines, output_dwg)
+    print(f"Saved DWG to {output_dwg}")
