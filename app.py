@@ -123,7 +123,7 @@ if st.session_state.file_uploaded:
 
     # ---- C4.5 ----
     with colA:
-        sub1, sub2 = st.columns([1, 1])
+        sub1, sub2 = st.columns([1.2, 0.8], gap="small")
         with sub1:
             st.markdown("#### 🔴 C4.5")
             st.markdown(f"- **Tercapai:** {c45_tercapai}  \n- **Tidak:** {c45_tidak}")
@@ -139,7 +139,7 @@ if st.session_state.file_uploaded:
 
     # ---- Naive Bayes ----
     with colB:
-        sub3, sub4 = st.columns([1, 1])
+        sub3, sub4 = st.columns([1.2, 0.8], gap="small")
         with sub3:
             st.markdown("#### 🔵 Naive Bayes")
             st.markdown(f"- **Tercapai:** {nb_tercapai}  \n- **Tidak:** {nb_tidak}")
