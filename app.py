@@ -153,11 +153,36 @@ if st.session_state.file_uploaded:
             ax_nb.tick_params(axis='both', labelsize=7)
             st.pyplot(fig_nb)
 
+    # ----------------- TABEL HASIL UNTUK SEMUA SPLIT -----------------
+    st.markdown("### 📑 Hasil Prediksi PO untuk Semua Split Data")
+    split_ratios = {"70:30": 0.3, "80:20": 0.2, "90:10": 0.1}
+    prediksi_list = []
+
+    for name, ratio in split_ratios.items():
+        X_train_s, X_test_s, y_train_s, y_test_s = train_test_split(X, y, stratify=y, test_size=ratio, random_state=42)
+
+        model_c45_s = DecisionTreeClassifier(criterion='entropy', random_state=42)
+        model_c45_s.fit(X_train_s, y_train_s)
+        y_pred_c45_s = model_c45_s.predict(X_test_s)
+        c45_tercapai_s = int((y_pred_c45_s == 1).sum())
+        c45_tidak_s = int((y_pred_c45_s == 0).sum())
+
+        model_nb_s = GaussianNB()
+        model_nb_s.fit(X_train_s, y_train_s)
+        y_pred_nb_s = model_nb_s.predict(X_test_s)
+        nb_tercapai_s = int((y_pred_nb_s == 1).sum())
+        nb_tidak_s = int((y_pred_nb_s == 0).sum())
+
+        prediksi_list.append({"Split": name, "Model": "C4.5", "Tercapai": c45_tercapai_s, "Tidak Tercapai": c45_tidak_s})
+        prediksi_list.append({"Split": name, "Model": "Naive Bayes", "Tercapai": nb_tercapai_s, "Tidak Tercapai": nb_tidak_s})
+
+    df_split_prediksi = pd.DataFrame(prediksi_list)
+    st.dataframe(df_split_prediksi.style.set_properties(**{'text-align': 'center'}).highlight_max(subset=["Tercapai"], color="lightgreen"))
+
     # ----------------- LAYOUT ANALISIS & GRAFIK -----------------
     st.markdown("---")
     col1, col2 = st.columns([1, 2])
 
-    # Ringkasan Analisis
     with col1:
         st.markdown(f"""
         <div style="background:#263238; padding:20px; border-radius:12px; color:white; box-shadow:0 4px 8px rgba(0,0,0,0.3);">
@@ -171,7 +196,6 @@ if st.session_state.file_uploaded:
         csv = df_eval.to_csv(index=False).encode('utf-8')
         st.download_button("⬇️ Download Hasil (CSV)", data=csv, file_name="hasil_evaluasi.csv", mime="text/csv")
 
-    # Grafik besar
     with col2:
         fig, axes = plt.subplots(1, 3, figsize=(15, 4))
 
@@ -194,7 +218,3 @@ if st.session_state.file_uploaded:
         fig.savefig(buf, format="png")
         buf.seek(0)
         st.download_button("⬇️ Download Grafik (PNG)", data=buf, file_name="grafik_dashboard.png", mime="image/png")
-
-    # ----------------- TABEL -----------------
-    st.markdown("<h3 style='color:#81C784;'>📄 Tabel Evaluasi Lengkap</h3>", unsafe_allow_html=True)
-    st.dataframe(df_eval.style.highlight_max(axis=0, color='lightgreen'))
