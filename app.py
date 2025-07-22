@@ -150,8 +150,7 @@ if st.session_state.file_uploaded:
 - **Accuracy = (TP + TN) / Total = ({TP_nb} + {TN_nb}) / {sum(sum(cm_nb))} = {acc_nb * 100:.1f}%**
 """)
 
-    # ----------------- HASIL PREDIKSI PO -----------------
-    # ----------------- HASIL PREDIKSI PO -----------------
+   # ----------------- HASIL PREDIKSI PO -----------------
 c45_tercapai = sum(y_pred_c45 == 1)
 c45_tidak = sum(y_pred_c45 == 0)
 nb_tercapai = sum(y_pred_nb == 1)
@@ -162,35 +161,48 @@ colA, colB = st.columns(2)
 
 # ---- C4.5 ----
 with colA:
-    st.markdown("#### 🔴 C4.5")
-    st.markdown(f"""
-- PO **Tercapai** (prediksi `1`): **{c45_tercapai} data**  
-- PO **Tidak Tercapai** (prediksi `0`): **{c45_tidak} data**
+    subcol1, subcol2 = st.columns([1, 1])  # teks dan chart sejajar
+    with subcol1:
+        st.markdown("#### 🔴 C4.5")
+        st.markdown(f"""
+- **Tercapai**: {c45_tercapai}  
+- **Tidak**: {c45_tidak}
 """)
-    # Bar Chart Kecil C4.5
-    fig_c45, ax_c45 = plt.subplots(figsize=(3, 3))
-    sns.barplot(x=['Tercapai', 'Tidak'], y=[c45_tercapai, c45_tidak], palette=['#4CAF50', '#E53935'], ax=ax_c45)
-    ax_c45.set_title("Distribusi C4.5", fontsize=10)
-    ax_c45.set_ylabel("")
-    for i, v in enumerate([c45_tercapai, c45_tidak]):
-        ax_c45.text(i, v + 0.2, str(v), ha='center', fontsize=9)
-    st.pyplot(fig_c45)
+    with subcol2:
+        fig_c45, ax_c45 = plt.subplots(figsize=(2, 2))
+        sns.barplot(x=['Tercapai', 'Tidak'], y=[c45_tercapai, c45_tidak],
+                    palette=['#4CAF50', '#E53935'], ax=ax_c45)
+        ax_c45.set_ylabel("")
+        ax_c45.set_xlabel("")
+        ax_c45.set_title("", fontsize=8)
+        for i, v in enumerate([c45_tercapai, c45_tidak]):
+            ax_c45.text(i, v + 0.1, str(v), ha='center', fontsize=7)
+        ax_c45.tick_params(axis='both', labelsize=7)
+        plt.tight_layout()
+        st.pyplot(fig_c45)
 
 # ---- Naive Bayes ----
 with colB:
-    st.markdown("#### 🔵 Naive Bayes")
-    st.markdown(f"""
-- PO **Tercapai** (prediksi `1`): **{nb_tercapai} data**  
-- PO **Tidak Tercapai** (prediksi `0`): **{nb_tidak} data**
+    subcol3, subcol4 = st.columns([1, 1])
+    with subcol3:
+        st.markdown("#### 🔵 Naive Bayes")
+        st.markdown(f"""
+- **Tercapai**: {nb_tercapai}  
+- **Tidak**: {nb_tidak}
 """)
-    # Bar Chart Kecil Naive Bayes
-    fig_nb, ax_nb = plt.subplots(figsize=(3, 3))
-    sns.barplot(x=['Tercapai', 'Tidak'], y=[nb_tercapai, nb_tidak], palette=['#4CAF50', '#E53935'], ax=ax_nb)
-    ax_nb.set_title("Distribusi Naive Bayes", fontsize=10)
-    ax_nb.set_ylabel("")
-    for i, v in enumerate([nb_tercapai, nb_tidak]):
-        ax_nb.text(i, v + 0.2, str(v), ha='center', fontsize=9)
-    st.pyplot(fig_nb)
+    with subcol4:
+        fig_nb, ax_nb = plt.subplots(figsize=(2, 2))
+        sns.barplot(x=['Tercapai', 'Tidak'], y=[nb_tercapai, nb_tidak],
+                    palette=['#4CAF50', '#E53935'], ax=ax_nb)
+        ax_nb.set_ylabel("")
+        ax_nb.set_xlabel("")
+        ax_nb.set_title("", fontsize=8)
+        for i, v in enumerate([nb_tercapai, nb_tidak]):
+            ax_nb.text(i, v + 0.1, str(v), ha='center', fontsize=7)
+        ax_nb.tick_params(axis='both', labelsize=7)
+        plt.tight_layout()
+        st.pyplot(fig_nb)
+
 
     # ----------------- DASHBOARD LAYOUT -----------------
     col1, col2 = st.columns([1, 2])
