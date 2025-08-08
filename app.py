@@ -11,7 +11,7 @@ TARGET_EPSG = "EPSG:32760"  # UTM 60S
 DEFAULT_WIDTH = 10
 
 # Inisialisasi Earth Engine
-SERVICE_ACCOUNT = st.secrets["tara-981@iconic-guard-466503-u1.iam.gserviceaccount.com"]
+SERVICE_ACCOUNT = st.secrets["GEE_SERVICE_ACCOUNT"]
 KEY_FILE = "privatekey.json"
 with open(KEY_FILE, "w") as f:
     f.write(st.secrets["GEE_PRIVATE_KEY"])
@@ -121,4 +121,3 @@ def run_app():
 
 if __name__ == "__main__":
     run_app()
-
