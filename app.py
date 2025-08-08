@@ -10,14 +10,24 @@ from shapely.ops import unary_union
 TARGET_EPSG = "EPSG:32760"  # UTM 60S
 DEFAULT_WIDTH = 10
 
-# Inisialisasi Earth Engine
-SERVICE_ACCOUNT = st.secrets["GEE_SERVICE_ACCOUNT"]
-PRIVATE_KEY = st.secrets["GEE_PRIVATE_KEY"]
-with open(KEY_FILE, "w") as f:
-    f.write(st.secrets["GEE_PRIVATE_KEY"])
+# ==============================
+# Inisialisasi Earth Engine (pakai file privatekey.json)
+# ==============================
+KEY_FILE = "privatekey.json"  # Pastikan file ini ada di folder project
+SERVICE_ACCOUNT = None
+
+# Baca client_email langsung dari file JSON
+import json
+with open(KEY_FILE) as f:
+    key_data = json.load(f)
+    SERVICE_ACCOUNT = key_data["client_email"]
+
 credentials = ee.ServiceAccountCredentials(SERVICE_ACCOUNT, KEY_FILE)
 ee.Initialize(credentials)
 
+# ==============================
+# Fungsi
+# ==============================
 def extract_polygon_from_kml(kml_path):
     gdf = gpd.read_file(kml_path)
     polygons = gdf[gdf.geometry.type.isin(["Polygon", "MultiPolygon"])]
@@ -29,13 +39,12 @@ def get_buildings_and_roads_from_gee(polygon):
     coords = list(polygon.exterior.coords)
     ee_poly = ee.Geometry.Polygon(coords)
 
-    # Dataset Bangunan (Google Open Buildings)
+    # Dataset Bangunan
     buildings = ee.FeatureCollection("GOOGLE/Research/open-buildings/v1/polygons").filterBounds(ee_poly)
 
-    # Dataset Jalan (OpenStreetMap dari GEE)
+    # Dataset Jalan
     roads = ee.FeatureCollection("projects/google/OpenStreetMap/roads").filterBounds(ee_poly)
 
-    # Download ke client (GeoJSON)
     buildings_gdf = gpd.GeoDataFrame.from_features(buildings.getInfo())
     roads_gdf = gpd.GeoDataFrame.from_features(roads.getInfo())
 
@@ -45,12 +54,10 @@ def export_to_dxf(boundary_poly, buildings_gdf, roads_gdf, polygon_crs, dxf_path
     doc = ezdxf.new()
     msp = doc.modelspace()
 
-    # Transform semua ke UTM 60
     buildings_gdf = buildings_gdf.to_crs(TARGET_EPSG)
     roads_gdf = roads_gdf.to_crs(TARGET_EPSG)
     boundary_poly = gpd.GeoSeries([boundary_poly], crs=polygon_crs).to_crs(TARGET_EPSG).iloc[0]
 
-    # Offset koordinat supaya mulai dari (0,0)
     bounds = list(boundary_poly.exterior.coords)
     min_x = min(x for x, y in bounds)
     min_y = min(y for x, y in bounds)
@@ -58,14 +65,14 @@ def export_to_dxf(boundary_poly, buildings_gdf, roads_gdf, polygon_crs, dxf_path
     def offset_coords(coords):
         return [(x - min_x, y - min_y) for x, y in coords]
 
-    # Tambahkan boundary
+    # Boundary
     if boundary_poly.geom_type == 'Polygon':
         msp.add_lwpolyline(offset_coords(boundary_poly.exterior.coords), dxfattribs={"layer": "BOUNDARY"})
     elif boundary_poly.geom_type == 'MultiPolygon':
         for p in boundary_poly.geoms:
             msp.add_lwpolyline(offset_coords(p.exterior.coords), dxfattribs={"layer": "BOUNDARY"})
 
-    # Tambahkan bangunan
+    # Bangunan
     for geom in buildings_gdf.geometry:
         if isinstance(geom, Polygon):
             msp.add_lwpolyline(offset_coords(geom.exterior.coords), dxfattribs={"layer": "BUILDINGS"})
@@ -73,7 +80,7 @@ def export_to_dxf(boundary_poly, buildings_gdf, roads_gdf, polygon_crs, dxf_path
             for p in geom.geoms:
                 msp.add_lwpolyline(offset_coords(p.exterior.coords), dxfattribs={"layer": "BUILDINGS"})
 
-    # Tambahkan jalan
+    # Jalan
     for geom in roads_gdf.geometry:
         if isinstance(geom, LineString):
             msp.add_lwpolyline(offset_coords(geom.coords), dxfattribs={"layer": "ROADS"})
@@ -96,6 +103,9 @@ def process_kml_to_dxf(kml_path, output_dir):
     export_to_dxf(polygon, buildings_gdf, roads_gdf, polygon_crs, dxf_path)
     return dxf_path
 
+# ==============================
+# UI Streamlit
+# ==============================
 def run_app():
     st.title("🏗️ KML → DXF (Google Earth Engine, UTM 60)")
     st.caption("Upload file .KML (boundary cluster), hasil: DXF dengan bangunan & jalan dari GEE.")
@@ -121,5 +131,3 @@ def run_app():
 
 if __name__ == "__main__":
     run_app()
-
-
