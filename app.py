@@ -1,224 +1,123 @@
+import os
+import ee
+import geopandas as gpd
 import streamlit as st
-import pandas as pd
-import seaborn as sns
-import matplotlib.pyplot as plt
-from sklearn.model_selection import train_test_split
-from sklearn.preprocessing import LabelEncoder, MinMaxScaler
-from sklearn.tree import DecisionTreeClassifier
-from sklearn.naive_bayes import GaussianNB
-from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score, confusion_matrix
-import io
+import ezdxf
+from shapely.geometry import LineString, MultiLineString, Polygon, MultiPolygon
+from shapely.ops import unary_union
 
-# ----------------- CONFIG -----------------
-st.set_page_config(page_title="Dashboard Analisis C4.5 vs Naive Bayes", layout="wide")
-sns.set_theme(style="whitegrid")
+# Konstanta
+TARGET_EPSG = "EPSG:32760"  # UTM 60S
+DEFAULT_WIDTH = 10
 
-# DARK MODE CSS
-dark_css = """
-<style>
-body { background-color: #121212; color: #E0E0E0; }
-.sidebar .sidebar-content { background: #1E1E1E; }
-.stButton > button { background-color: #4CAF50; color: white; border-radius: 8px; }
-div[data-testid="stHorizontalBlock"] > div { border-radius: 12px; padding: 12px; }
-h1, h2, h3, h4, h5 { color: #81C784; }
-</style>
-"""
-st.markdown(dark_css, unsafe_allow_html=True)
+# Inisialisasi Earth Engine
+SERVICE_ACCOUNT = st.secrets["GEE_SERVICE_ACCOUNT"]
+KEY_FILE = "privatekey.json"
+with open(KEY_FILE, "w") as f:
+    f.write(st.secrets["GEE_PRIVATE_KEY"])
+credentials = ee.ServiceAccountCredentials(SERVICE_ACCOUNT, KEY_FILE)
+ee.Initialize(credentials)
 
-# ----------------- TITLE -----------------
-st.markdown("<h1 style='text-align:center; color:#4CAF50;'>📊 Dashboard Analisis C4.5 vs Naive Bayes</h1>", unsafe_allow_html=True)
-st.markdown("<p style='text-align:center; font-size:18px;'>Prediksi Ketercapaian Target PO - MyRepublic</p>", unsafe_allow_html=True)
-st.markdown("---")
+def extract_polygon_from_kml(kml_path):
+    gdf = gpd.read_file(kml_path)
+    polygons = gdf[gdf.geometry.type.isin(["Polygon", "MultiPolygon"])]
+    if polygons.empty:
+        raise Exception("❌ Tidak ada polygon di file KML.")
+    return unary_union(polygons.geometry), polygons.crs
 
-# ----------------- SESSION STATE -----------------
-if "file_uploaded" not in st.session_state:
-    st.session_state.file_uploaded = False
+def get_buildings_and_roads_from_gee(polygon):
+    coords = list(polygon.exterior.coords)
+    ee_poly = ee.Geometry.Polygon(coords)
 
-# ----------------- UPLOAD SECTION -----------------
-if not st.session_state.file_uploaded:
-    uploaded_file = st.file_uploader("🗂 Upload File Excel", type=["xlsx"])
-    if uploaded_file is not None:
-        st.session_state.file_uploaded = True
-        st.session_state.uploaded_file = uploaded_file
-        st.rerun()
-else:
-    uploaded_file = st.session_state.uploaded_file
-    st.success(f"✅ File berhasil diunggah: {uploaded_file.name}")
-    if st.button("🔄 Reset File"):
-        st.session_state.file_uploaded = False
-        st.rerun()
+    # Dataset Bangunan (Google Open Buildings)
+    buildings = ee.FeatureCollection("GOOGLE/Research/open-buildings/v1/polygons").filterBounds(ee_poly)
 
-# ----------------- MAIN PROCESS -----------------
-if st.session_state.file_uploaded:
-    df_raw = pd.read_excel(uploaded_file)
+    # Dataset Jalan (OpenStreetMap dari GEE)
+    roads = ee.FeatureCollection("projects/google/OpenStreetMap/roads").filterBounds(ee_poly)
 
-    # Preprocessing
-    df = df_raw.rename(columns={
-        'Topology': 'topologi',
-        'Vendor': 'vendor',
-        'HP Cluster\n(SND Wajib Isi)': 'hp_cluster',
-        'Status PO Cluster (SND Wajib Isi)': 'status_po'
-    })[['topologi', 'vendor', 'hp_cluster', 'status_po']].dropna()
+    # Download ke client (GeoJSON)
+    buildings_gdf = gpd.GeoDataFrame.from_features(buildings.getInfo())
+    roads_gdf = gpd.GeoDataFrame.from_features(roads.getInfo())
 
-    df['status_po'] = df['status_po'].str.lower().str.strip()
-    df['label'] = df['status_po'].apply(lambda x: 1 if x == 'done' else 0)
-    df['topologi_enc'] = LabelEncoder().fit_transform(df['topologi'].astype(str))
-    df['vendor_enc'] = LabelEncoder().fit_transform(df['vendor'].astype(str))
-    df['hp_cluster_norm'] = MinMaxScaler().fit_transform(df[['hp_cluster']])
+    return buildings_gdf, roads_gdf
 
-    # Sidebar controls
-    st.sidebar.header("⚙️ Pengaturan Analisis")
-    split_option = st.sidebar.radio("Pilih Rasio Split Data", ["80:20", "70:30", "90:10"])
-    metric_option = st.sidebar.radio("Pilih Metrik Evaluasi", ["Accuracy", "Precision", "Recall", "F1-score"])
+def export_to_dxf(boundary_poly, buildings_gdf, roads_gdf, polygon_crs, dxf_path):
+    doc = ezdxf.new()
+    msp = doc.modelspace()
 
-    split_map = {"80:20": 0.2, "70:30": 0.3, "90:10": 0.1}
-    split_ratio = split_map[split_option]
+    # Transform semua ke UTM 60
+    buildings_gdf = buildings_gdf.to_crs(TARGET_EPSG)
+    roads_gdf = roads_gdf.to_crs(TARGET_EPSG)
+    boundary_poly = gpd.GeoSeries([boundary_poly], crs=polygon_crs).to_crs(TARGET_EPSG).iloc[0]
 
-    X = df[['topologi_enc', 'vendor_enc', 'hp_cluster_norm']]
-    y = df['label']
+    # Offset koordinat supaya mulai dari (0,0)
+    bounds = list(boundary_poly.exterior.coords)
+    min_x = min(x for x, y in bounds)
+    min_y = min(y for x, y in bounds)
 
-    # Training model
-    with st.spinner("🔄 Training model... Mohon tunggu"):
-        X_train, X_test, y_train, y_test = train_test_split(X, y, stratify=y, test_size=split_ratio, random_state=42)
+    def offset_coords(coords):
+        return [(x - min_x, y - min_y) for x, y in coords]
 
-        model_c45 = DecisionTreeClassifier(criterion='entropy', random_state=42)
-        model_c45.fit(X_train, y_train)
-        y_pred_c45 = model_c45.predict(X_test)
+    # Tambahkan boundary
+    if boundary_poly.geom_type == 'Polygon':
+        msp.add_lwpolyline(offset_coords(boundary_poly.exterior.coords), dxfattribs={"layer": "BOUNDARY"})
+    elif boundary_poly.geom_type == 'MultiPolygon':
+        for p in boundary_poly.geoms:
+            msp.add_lwpolyline(offset_coords(p.exterior.coords), dxfattribs={"layer": "BOUNDARY"})
 
-        model_nb = GaussianNB()
-        model_nb.fit(X_train, y_train)
-        y_pred_nb = model_nb.predict(X_test)
+    # Tambahkan bangunan
+    for geom in buildings_gdf.geometry:
+        if isinstance(geom, Polygon):
+            msp.add_lwpolyline(offset_coords(geom.exterior.coords), dxfattribs={"layer": "BUILDINGS"})
+        elif isinstance(geom, MultiPolygon):
+            for p in geom.geoms:
+                msp.add_lwpolyline(offset_coords(p.exterior.coords), dxfattribs={"layer": "BUILDINGS"})
 
-    # Evaluasi metrik
-    def evaluate(y_true, y_pred):
-        return {
-            "Accuracy": accuracy_score(y_true, y_pred),
-            "Precision": precision_score(y_true, y_pred),
-            "Recall": recall_score(y_true, y_pred),
-            "F1-score": f1_score(y_true, y_pred)
-        }
+    # Tambahkan jalan
+    for geom in roads_gdf.geometry:
+        if isinstance(geom, LineString):
+            msp.add_lwpolyline(offset_coords(geom.coords), dxfattribs={"layer": "ROADS"})
+        elif isinstance(geom, MultiLineString):
+            for line in geom.geoms:
+                msp.add_lwpolyline(offset_coords(line.coords), dxfattribs={"layer": "ROADS"})
 
-    c45_result = evaluate(y_test, y_pred_c45)
-    nb_result = evaluate(y_test, y_pred_nb)
+    doc.set_modelspace_vport(height=10000)
+    doc.saveas(dxf_path)
 
-    df_eval = pd.DataFrame([
-        {"Model": "C4.5", **c45_result},
-        {"Model": "Naive Bayes", **nb_result}
-    ])
+def process_kml_to_dxf(kml_path, output_dir):
+    os.makedirs(output_dir, exist_ok=True)
+    polygon, polygon_crs = extract_polygon_from_kml(kml_path)
+    buildings_gdf, roads_gdf = get_buildings_and_roads_from_gee(polygon)
 
-    best = df_eval.sort_values(by=metric_option, ascending=False).iloc[0]
+    if buildings_gdf.empty and roads_gdf.empty:
+        raise Exception("❌ Tidak ada bangunan atau jalan ditemukan di area ini.")
 
-    # Confusion Matrix
-    cm_c45 = confusion_matrix(y_test, y_pred_c45)
-    cm_nb = confusion_matrix(y_test, y_pred_nb)
+    dxf_path = os.path.join(output_dir, "map_utm60.dxf")
+    export_to_dxf(polygon, buildings_gdf, roads_gdf, polygon_crs, dxf_path)
+    return dxf_path
 
-    # ----------------- HASIL PREDIKSI PO -----------------
-    st.markdown("### 🎯 Hasil Prediksi PO Tercapai & Tidak Tercapai")
-    colA, colB = st.columns(2)
+def run_app():
+    st.title("🏗️ KML → DXF (Google Earth Engine, UTM 60)")
+    st.caption("Upload file .KML (boundary cluster), hasil: DXF dengan bangunan & jalan dari GEE.")
 
-    c45_tercapai = sum(y_pred_c45 == 1)
-    c45_tidak = sum(y_pred_c45 == 0)
-    nb_tercapai = sum(y_pred_nb == 1)
-    nb_tidak = sum(y_pred_nb == 0)
+    kml_file = st.file_uploader("Upload file .KML", type=["kml"])
 
-    # ---- C4.5 ----
-    with colA:
-        sub1, sub2 = st.columns([1, 1])
-        with sub1:
-            st.markdown("#### 🔴 C4.5")
-            st.markdown(f"- **Tercapai:** {c45_tercapai}  \n- **Tidak:** {c45_tidak}")
-        with sub2:
-            fig_c45, ax_c45 = plt.subplots(figsize=(2.2, 2))
-            sns.barplot(x=['Tercapai', 'Tidak'], y=[c45_tercapai, c45_tidak],
-                        palette=['#4CAF50', '#E53935'], ax=ax_c45)
-            ax_c45.set_ylabel("")
-            for i, v in enumerate([c45_tercapai, c45_tidak]):
-                ax_c45.text(i, v + 0.1, str(v), ha='center', fontsize=7)
-            ax_c45.tick_params(axis='both', labelsize=7)
-            st.pyplot(fig_c45)
+    if kml_file:
+        with st.spinner("💫 Memproses data dari GEE..."):
+            try:
+                temp_input = f"/tmp/{kml_file.name}"
+                with open(temp_input, "wb") as f:
+                    f.write(kml_file.read())
 
-    # ---- Naive Bayes ----
-    with colB:
-        sub3, sub4 = st.columns([1, 1])
-        with sub3:
-            st.markdown("#### 🔵 Naive Bayes")
-            st.markdown(f"- **Tercapai:** {nb_tercapai}  \n- **Tidak:** {nb_tidak}")
-        with sub4:
-            fig_nb, ax_nb = plt.subplots(figsize=(2.2, 2))
-            sns.barplot(x=['Tercapai', 'Tidak'], y=[nb_tercapai, nb_tidak],
-                        palette=['#4CAF50', '#E53935'], ax=ax_nb)
-            ax_nb.set_ylabel("")
-            for i, v in enumerate([nb_tercapai, nb_tidak]):
-                ax_nb.text(i, v + 0.1, str(v), ha='center', fontsize=7)
-            ax_nb.tick_params(axis='both', labelsize=7)
-            st.pyplot(fig_nb)
+                output_dir = "/tmp/output"
+                dxf_path = process_kml_to_dxf(temp_input, output_dir)
 
-    # ----------------- TABEL HASIL UNTUK SEMUA SPLIT -----------------
-    st.markdown("### 📑 Hasil Prediksi PO untuk Semua Split Data")
-    split_ratios = {"70:30": 0.3, "80:20": 0.2, "90:10": 0.1}
-    prediksi_list = []
+                st.success("✅ Berhasil diekspor ke DXF (UTM 60)!")
+                with open(dxf_path, "rb") as f:
+                    st.download_button("⬇️ Download DXF", data=f, file_name="map_utm60.dxf")
 
-    for name, ratio in split_ratios.items():
-        X_train_s, X_test_s, y_train_s, y_test_s = train_test_split(X, y, stratify=y, test_size=ratio, random_state=42)
+            except Exception as e:
+                st.error(f"❌ Terjadi kesalahan: {e}")
 
-        model_c45_s = DecisionTreeClassifier(criterion='entropy', random_state=42)
-        model_c45_s.fit(X_train_s, y_train_s)
-        y_pred_c45_s = model_c45_s.predict(X_test_s)
-        c45_tercapai_s = int((y_pred_c45_s == 1).sum())
-        c45_tidak_s = int((y_pred_c45_s == 0).sum())
-
-        model_nb_s = GaussianNB()
-        model_nb_s.fit(X_train_s, y_train_s)
-        y_pred_nb_s = model_nb_s.predict(X_test_s)
-        nb_tercapai_s = int((y_pred_nb_s == 1).sum())
-        nb_tidak_s = int((y_pred_nb_s == 0).sum())
-
-        prediksi_list.append({"Split": name, "Model": "C4.5", "Tercapai": c45_tercapai_s, "Tidak Tercapai": c45_tidak_s})
-        prediksi_list.append({"Split": name, "Model": "Naive Bayes", "Tercapai": nb_tercapai_s, "Tidak Tercapai": nb_tidak_s})
-
-    df_split_prediksi = pd.DataFrame(prediksi_list)
-    st.dataframe(df_split_prediksi.style.set_properties(**{'text-align': 'center'}).highlight_max(subset=["Tercapai"], color="lightgreen"))
-
-    # ----------------- LAYOUT ANALISIS & GRAFIK -----------------
-    st.markdown("---")
-    col1, col2 = st.columns([1, 2])
-
-    with col1:
-        st.markdown(f"""
-        <div style="background:#263238; padding:20px; border-radius:12px; color:white; box-shadow:0 4px 8px rgba(0,0,0,0.3);">
-        <h3 style='color:#4CAF50;'>📌 Ringkasan Analisis</h3>
-        <p><b>Metrik:</b> {metric_option}</p>
-        <p><b>Model Terbaik:</b> <span style='color:#81C784;'>{best['Model']}</span></p>
-        <p><b>Skor:</b> {best[metric_option]:.4f}</p>
-        </div>
-        """, unsafe_allow_html=True)
-
-        csv = df_eval.to_csv(index=False).encode('utf-8')
-        st.download_button("⬇️ Download Hasil (CSV)", data=csv, file_name="hasil_evaluasi.csv", mime="text/csv")
-
-    with col2:
-        fig, axes = plt.subplots(1, 3, figsize=(15, 4))
-
-        sns.barplot(data=df_eval, x='Model', y=metric_option, palette="viridis", ax=axes[0])
-        axes[0].set_ylim(0, 1)
-        axes[0].set_title(f"Perbandingan {metric_option}")
-        for i, val in enumerate(df_eval[metric_option]):
-            axes[0].text(i, val + 0.02, f"{val:.2f}", ha='center', fontsize=9)
-
-        sns.heatmap(cm_c45, annot=True, fmt='d', cmap='Blues', ax=axes[1])
-        axes[1].set_title("C4.5")
-
-        sns.heatmap(cm_nb, annot=True, fmt='d', cmap='Greens', ax=axes[2])
-        axes[2].set_title("Naive Bayes")
-
-        plt.tight_layout()
-        st.pyplot(fig)
-
-        buf = io.BytesIO()
-        fig.savefig(buf, format="png")
-        buf.seek(0)
-        st.download_button("⬇️ Download Grafik (PNG)", data=buf, file_name="grafik_dashboard.png", mime="image/png")
-
-    # ----------------- TABEL -----------------
-    st.markdown("<h3 style='color:#81C784;'>📄 Tabel Evaluasi Lengkap</h3>", unsafe_allow_html=True)
-    st.dataframe(df_eval.style.highlight_max(axis=0, color='lightgreen'))
+if __name__ == "__main__":
+    run_app()
