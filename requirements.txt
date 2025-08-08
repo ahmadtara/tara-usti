@@ -1,7 +1,7 @@
 streamlit
-pandas
-numpy
-scikit-learn
-seaborn
-matplotlib
-openpyxl
+geopandas
+shapely
+ezdxf
+earthengine-api
+fiona
+pyproj
