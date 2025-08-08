@@ -12,7 +12,7 @@ DEFAULT_WIDTH = 10
 
 # Inisialisasi Earth Engine
 SERVICE_ACCOUNT = st.secrets["GEE_SERVICE_ACCOUNT"]
-KEY_FILE = "/tmp/privatekey.json"
+PRIVATE_KEY = st.secrets["GEE_PRIVATE_KEY"]
 with open(KEY_FILE, "w") as f:
     f.write(st.secrets["GEE_PRIVATE_KEY"])
 credentials = ee.ServiceAccountCredentials(SERVICE_ACCOUNT, KEY_FILE)
@@ -121,4 +121,5 @@ def run_app():
 
 if __name__ == "__main__":
     run_app()
+
 
