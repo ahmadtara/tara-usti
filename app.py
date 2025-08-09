@@ -1,17 +1,3 @@
-# app_gee_kmz_to_dxf.py
-"""
-Streamlit app: KMZ -> DXF using Google Earth Engine (GEE) imagery + segmentation.
-
-PRASYARAT:
-pip install streamlit earthengine-api rasterio numpy opencv-python shapely pyproj ultralytics ezdxf geopandas requests fastkml pillow
-
-- Isi st.secrets["gee_service_account"] dengan JSON (string) dari service account.
-- Siapkan model segmentation (YOLOv8-seg .pt atau Mask R-CNN) dan upload via UI.
-- GPU direkomendasikan untuk inference berat.
-
-Catatan: Jika getDownloadURL gagal karena ukuran/limits, gunakan ee.batch.Export to GCS (but that requires extra steps & credentials).
-"""
-
 import os
 import zipfile
 import tempfile
@@ -35,6 +21,8 @@ from ultralytics import YOLO  # optional; use your segmentation framework
 import ezdxf
 import ee
 import requests
+from kmz_parser import parse_kmz
+from shapely.ops import unary_union
 
 st.set_page_config(page_title="KMZ → DXF (GEE)", layout="wide")
 
@@ -50,6 +38,34 @@ PREFERRED_COLLECTIONS = [
 ]
 
 # ---------- Helpers: KML/KMZ ----------
+def fix_geometry(geom):
+    try:
+        if not geom.is_valid:
+            geom = geom.buffer(0)
+        return geom
+    except Exception as e:
+        print(f"[WARNING] Gagal perbaiki geometry: {e}")
+        return None
+
+def load_kmz_with_fix(kmz_path):
+    geoms = parse_kmz(kmz_path)
+    fixed_geoms = []
+    for g in geoms:
+        g = fix_geometry(g)
+        if g:
+            fixed_geoms.append(g)
+    return fixed_geoms
+
+if __name__ == "__main__":
+    kmz_file = "data/contoh.kmz"
+    geoms = load_kmz_with_fix(kmz_file)
+
+    if not geoms:
+        print("Tidak ada geometry valid yang ditemukan.")
+    else:
+        merged_geom = unary_union(geoms)
+        print(f"Berhasil load {len(geoms)} geometry valid dari KMZ.")
+
 def extract_first_kml_from_kmz(kmz_path):
     with zipfile.ZipFile(kmz_path, 'r') as zf:
         for name in zf.namelist():
@@ -389,3 +405,4 @@ def run_app():
 
 if __name__ == "__main__":
     run_app()
+
