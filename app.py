@@ -34,12 +34,18 @@ ee.Initialize(credentials)
 # ==============================
 # Fungsi
 # ==============================
+
 def extract_polygon_from_kml(kml_path):
     gdf = gpd.read_file(kml_path)
+
+    # Validasi & perbaikan geometry
+    gdf["geometry"] = gdf["geometry"].apply(lambda g: g.buffer(0) if g.is_valid == False else g)
+
     polygons = gdf[gdf.geometry.type.isin(["Polygon", "MultiPolygon"])]
     if polygons.empty:
-        raise Exception("❌ Tidak ada polygon di file KML.")
+        raise Exception("❌ Tidak ada polygon di file KML. Pastikan boundary cluster berbentuk area.")
     return unary_union(polygons.geometry), polygons.crs
+
 
 def get_buildings_and_roads_from_gee(polygon):
     coords = list(polygon.exterior.coords)
@@ -137,3 +143,4 @@ def run_app():
 
 if __name__ == "__main__":
     run_app()
+
