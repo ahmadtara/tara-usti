@@ -1,7 +1,12 @@
 streamlit
+geemap
+earthengine-api
 geopandas
 shapely
+numpy
+opencv-python
 ezdxf
-earthengine-api
-fiona
+Pillow
+requests
 pyproj
+
