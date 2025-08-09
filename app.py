@@ -3,6 +3,7 @@ import ee
 import geopandas as gpd
 import streamlit as st
 import ezdxf
+import json
 from shapely.geometry import LineString, MultiLineString, Polygon, MultiPolygon
 from shapely.ops import unary_union
 
@@ -11,17 +12,22 @@ TARGET_EPSG = "EPSG:32760"  # UTM 60S
 DEFAULT_WIDTH = 10
 
 # ==============================
-# Inisialisasi Earth Engine (pakai file privatekey.json)
+# Inisialisasi Earth Engine (pakai st.secrets)
 # ==============================
-KEY_FILE = "privatekey.json"  # Pastikan file ini ada di folder project
-SERVICE_ACCOUNT = None
+# Ambil info service account dari Streamlit Secrets
+service_account_info = st.secrets["gee_service_account"]
 
-# Baca client_email langsung dari file JSON
-import json
-with open(KEY_FILE) as f:
-    key_data = json.load(f)
-    SERVICE_ACCOUNT = key_data["client_email"]
+# Ubah jadi dict Python
+service_account_dict = dict(service_account_info)
 
+# Simpan sementara ke file di /tmp (EE butuh file)
+KEY_FILE = "/tmp/privatekey.json"
+with open(KEY_FILE, "w") as f:
+    json.dump(service_account_dict, f)
+
+SERVICE_ACCOUNT = service_account_dict["client_email"]
+
+# Inisialisasi kredensial
 credentials = ee.ServiceAccountCredentials(SERVICE_ACCOUNT, KEY_FILE)
 ee.Initialize(credentials)
 
