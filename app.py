@@ -312,4 +312,39 @@ def run_app():
             raise
 
         try:
-            st.info("Mencari polygon boundary di dalam KML (folder 'BOUNDARY CLUS
+            st.info("Mencari polygon boundary di dalam KML (folder 'BOUNDARY CLUSTER')...")
+            boundary_poly = find_boundary_polygons_from_kml(kml_path, folder_name="BOUNDARY CLUSTER")
+            st.success("Boundary polygon ditemukan.")
+            # Tampilkan ringkas bbox & area
+            st.write("Boundary bbox (lon/lat):", boundary_poly.bounds)
+        except Exception as e:
+            st.error(f"Gagal membaca boundary dari KML: {e}")
+            raise
+
+        # konfirmasi sebelum query GEE (karena ambil semua fitur)
+        proceed = st.button("Ambil data dari GEE dan konversi ke DXF (Proses ini bisa lama)")
+        if not proceed:
+            st.info("Klik tombol di atas untuk mulai mengambil data GEE & membuat DXF.")
+        else:
+            st.info("Mulai query GEE... tunggu sampai proses selesai.")
+            try:
+                max_feat = None if not max_features_option else int(max_features_value)
+                buildings_gdf, roads_gdf = query_buildings_and_roads(boundary_poly, max_features=max_feat)
+                st.write("Jumlah fitur bangunan (downloaded):", 0 if buildings_gdf.empty else len(buildings_gdf))
+                st.write("Jumlah fitur jalan (downloaded):", 0 if roads_gdf.empty else len(roads_gdf))
+
+                if (buildings_gdf.empty and roads_gdf.empty):
+                    st.warning("Tidak ditemukan bangunan atau jalan di area ini (hasil query kosong). Pastikan area tidak terlalu kecil atau dataset GEE mencakup wilayah tersebut.")
+                else:
+                    # export to dxf
+                    out_dxf = tempfile.NamedTemporaryFile(delete=False, suffix=".dxf").name
+                    with st.spinner("Menyimpan DXF..."):
+                        export_to_dxf(boundary_poly, buildings_gdf, roads_gdf, out_dxf)
+                    st.success("DXF berhasil dibuat.")
+                    with open(out_dxf, "rb") as f:
+                        st.download_button("⬇️ Download DXF", f, file_name="map_buildings_roads.dxf")
+            except Exception as e:
+                st.error(f"Gagal proses GEE / pembuatan DXF: {e}")
+
+if __name__ == "__main__":
+    run_app()
