@@ -4,11 +4,8 @@ earthengine-api
 geopandas
 shapely
 numpy
-opencv-python-headless
+opencv-python
 ezdxf
-pillow
+Pillow
 requests
 pyproj
-rasterio==1.3.6
-ultralytics>=8.0.20
-GDAL==3.7.0
