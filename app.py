@@ -38,21 +38,26 @@ ee.Initialize(credentials)
 def extract_polygon_from_kml(kml_path):
     gdf = gpd.read_file(kml_path)
 
-    # Perbaiki semua geometry invalid
+    # Perbaiki geometri invalid
     gdf["geometry"] = gdf["geometry"].buffer(0)
 
-    # Ambil hanya Polygon dan MultiPolygon
-    polygons = gdf[gdf.geometry.type.isin(["Polygon", "MultiPolygon"])]
+    # Pecah kalau ada GeometryCollection
+    gdf = gdf.explode(index_parts=False, ignore_index=True)
+
+    # Ambil hanya polygon dengan area > 0
+    polygons = gdf[
+        gdf.geometry.type.isin(["Polygon", "MultiPolygon"]) & 
+        (gdf.geometry.area > 0)
+    ]
 
     if polygons.empty:
-        raise Exception("❌ Tidak ada polygon di file KML.")
+        raise Exception("❌ File KML tidak mengandung area polygon. Pastikan ini adalah batas wilayah, bukan garis/titik.")
 
-    # Gabungkan jadi satu
     merged = unary_union(polygons.geometry)
 
-    # Kalau hasilnya bukan polygon, error
+    # Pengecekan akhir
     if merged.is_empty or merged.geom_type not in ["Polygon", "MultiPolygon"]:
-        raise Exception(f"❌ Geometry tidak valid, tipe: {merged.geom_type}")
+        raise Exception(f"❌ Geometry hasil merge tidak valid. Tipe: {merged.geom_type}")
 
     return merged, polygons.crs
 
@@ -161,6 +166,7 @@ def run_app():
 
 if __name__ == "__main__":
     run_app()
+
 
 
 
