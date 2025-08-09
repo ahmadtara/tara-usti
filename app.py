@@ -1,87 +1,189 @@
 import os
-import ee
-import geopandas as gpd
-import streamlit as st
-import ezdxf
 import json
+import tempfile
+import streamlit as st
+import geopandas as gpd
+import ezdxf
+import ee
 from shapely.geometry import LineString, MultiLineString, Polygon, MultiPolygon
 from shapely.ops import unary_union
+from shapely.geometry import LinearRing
 
-# Konstanta
-TARGET_EPSG = "EPSG:32760"  # UTM 60S
-DEFAULT_WIDTH = 10
+# --- Konfigurasi ---
+TARGET_EPSG = "EPSG:32760"  # UTM 60S (sesuaikan kalau mau EPSG lain)
+DEFAULT_MAX_FEATURES = 2000  # batasi request ke GEE supaya tidak timeout
 
 # ==============================
 # Inisialisasi Earth Engine (pakai st.secrets)
 # ==============================
-# Ambil info service account dari Streamlit Secrets
-service_account_info = st.secrets["gee_service_account"]
+def init_ee_from_streamlit_secrets():
+    if "gee_service_account" not in st.secrets:
+        raise RuntimeError("Service account GEE tidak ditemukan di streamlit secrets (st.secrets['gee_service_account']).")
+    service_account_info = st.secrets["gee_service_account"]
 
-# Ubah jadi dict Python
-service_account_dict = dict(service_account_info)
+    # service_account_info bisa berupa dict atau string-json
+    if isinstance(service_account_info, str):
+        service_account_dict = json.loads(service_account_info)
+    else:
+        service_account_dict = dict(service_account_info)
 
-# Simpan sementara ke file di /tmp (EE butuh file)
-KEY_FILE = "/tmp/privatekey.json"
-with open(KEY_FILE, "w") as f:
-    json.dump(service_account_dict, f)
+    # Simpan sementara ke file karena ee.ServiceAccountCredentials butuh file path
+    tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".json")
+    KEY_FILE = tmp.name
+    with open(KEY_FILE, "w") as f:
+        json.dump(service_account_dict, f)
 
-SERVICE_ACCOUNT = service_account_dict["client_email"]
+    SERVICE_ACCOUNT = service_account_dict.get("client_email")
+    if not SERVICE_ACCOUNT:
+        os.remove(KEY_FILE)
+        raise RuntimeError("client_email tidak ditemukan dalam service account JSON.")
 
-# Inisialisasi kredensial
-credentials = ee.ServiceAccountCredentials(SERVICE_ACCOUNT, KEY_FILE)
-ee.Initialize(credentials)
+    credentials = ee.ServiceAccountCredentials(SERVICE_ACCOUNT, KEY_FILE)
+    ee.Initialize(credentials)
+
+    # hapus file kunci jika mau (EE sudah inisialisasi)
+    try:
+        os.remove(KEY_FILE)
+    except Exception:
+        pass
 
 # ==============================
-# Fungsi
+# Fungsi pembantu
 # ==============================
 
-def extract_polygon_from_kml(kml_path):
-    gdf = gpd.read_file(kml_path)
+def read_kml_to_polygons(kml_path):
+    """
+    Baca KML dan kembalikan (merged_polygon, original_crs).
+    Bisa mengkonversi garis tertutup menjadi polygon bila perlu.
+    """
+    # coba baca dengan driver KML
+    try:
+        gdf = gpd.read_file(kml_path, driver="KML")
+    except Exception as e:
+        # jika gagal, oper error yang lebih jelas
+        raise RuntimeError(f"Gagal membaca KML dengan geopandas (pastikan GDAL/OGR mendukung driver KML). Error: {e}")
 
-    # Perbaiki geometri invalid
-    gdf["geometry"] = gdf["geometry"].buffer(0)
+    # Jika crs None, asumsikan WGS84 (EPSG:4326)
+    if gdf.crs is None:
+        gdf.set_crs("EPSG:4326", inplace=True)
 
-    # Pecah kalau ada GeometryCollection
-    gdf = gdf.explode(index_parts=False, ignore_index=True)
+    # Normalize geometri: ubah LineString tertutup jadi Polygon
+    new_geoms = []
+    for geom in gdf.geometry:
+        if geom is None:
+            continue
+        gtype = geom.geom_type
+        if gtype in ["LineString"]:
+            # Cek tertutup (first == last) -> ubah jadi Polygon
+            coords = list(geom.coords)
+            if len(coords) >= 4 and coords[0] == coords[-1]:
+                try:
+                    poly = Polygon(coords)
+                    new_geoms.append(poly)
+                    continue
+                except Exception:
+                    pass
+        if gtype == "MultiLineString":
+            # coba gabungkan lines yang membentuk ring
+            converted = []
+            for line in geom.geoms:
+                coords = list(line.coords)
+                if len(coords) >= 4 and coords[0] == coords[-1]:
+                    try:
+                        converted.append(Polygon(coords))
+                    except Exception:
+                        pass
+            if converted:
+                # gabungkan jadi MultiPolygon
+                new_geoms.append(MultiPolygon(converted))
+                continue
+        # default: pakai geom apa adanya
+        new_geoms.append(geom)
 
-    # Ambil hanya polygon dengan area > 0
-    polygons = gdf[
-        gdf.geometry.type.isin(["Polygon", "MultiPolygon"]) & 
-        (gdf.geometry.area > 0)
-    ]
+    # buat GeoDataFrame sementara kalau perlu
+    gdf2 = gdf.copy()
+    gdf2.geometry = new_geoms
 
-    if polygons.empty:
-        raise Exception("❌ File KML tidak mengandung area polygon. Pastikan ini adalah batas wilayah, bukan garis/titik.")
+    # Pecah (explode) geometry collection / multiparts
+    try:
+        gdf2 = gdf2.explode(index_parts=False, ignore_index=True)
+    except TypeError:
+        # fallback untuk geopandas tua
+        gdf2 = gdf2.explode().reset_index(drop=True)
 
-    merged = unary_union(polygons.geometry)
+    # Filter hanya polygon / multipolygon dan area > 0
+    polys = gdf2[gdf2.geometry.type.isin(["Polygon", "MultiPolygon"])].copy()
+    polys["area"] = polys.geometry.area
+    polys = polys[polys["area"] > 0]
 
-    # Pengecekan akhir
+    if polys.empty:
+        # Jika tidak ada polygon, beri pesan agar user mengecek KML
+        raise RuntimeError("File KML tidak mengandung polygon aktif. Jika boundary berupa garis tertutup, pastikan koordinat awal dan akhir sama sehingga dapat diubah menjadi polygon.")
+
+    merged = unary_union(polys.geometry)
     if merged.is_empty or merged.geom_type not in ["Polygon", "MultiPolygon"]:
-        raise Exception(f"❌ Geometry hasil merge tidak valid. Tipe: {merged.geom_type}")
+        raise RuntimeError(f"Geometry hasil merge tidak valid. Tipe: {merged.geom_type}")
 
-    return merged, polygons.crs
+    return merged, polys.crs
 
+def gee_featurecollection_to_geodataframe(fc, max_features=DEFAULT_MAX_FEATURES):
+    """
+    Ambil sebagian FeatureCollection dari GEE dan konversi ke GeoDataFrame.
+    Gunakan limit(max_features) untuk menghindari download berlebih.
+    """
+    try:
+        info = fc.limit(int(max_features)).getInfo()
+    except ee.EEException as e:
+        raise RuntimeError(f"GEE getInfo() gagal (kemungkinan area terlalu besar atau quota). Pesan: {e}")
+    except Exception as e:
+        raise RuntimeError(f"Gagal mengambil data dari GEE. Pesan: {e}")
 
-def get_buildings_and_roads_from_gee(polygon):
-    # Pastikan semua polygon jadi list koordinat
+    if not info or "features" not in info or len(info["features"]) == 0:
+        # kembalikan GeoDataFrame kosong
+        return gpd.GeoDataFrame(columns=["geometry"], crs="EPSG:4326")
+
+    try:
+        gdf = gpd.GeoDataFrame.from_features(info)
+    except Exception:
+        # fallback: buat manual dari fitur
+        features = info.get("features", [])
+        geom_list = []
+        props_list = []
+        for f in features:
+            geom = f.get("geometry")
+            props = f.get("properties", {})
+            if geom:
+                geom_list.append(gpd.GeoSeries.from_geojson(json.dumps(geom)).iloc[0])
+                props_list.append(props)
+        if geom_list:
+            gdf = gpd.GeoDataFrame(props_list, geometry=geom_list, crs="EPSG:4326")
+        else:
+            gdf = gpd.GeoDataFrame(columns=["geometry"], crs="EPSG:4326")
+
+    # Pastikan CRS terpasang
+    if gdf.crs is None:
+        gdf.set_crs("EPSG:4326", inplace=True)
+
+    return gdf
+
+def get_buildings_and_roads_from_gee(polygon, max_features=DEFAULT_MAX_FEATURES):
+    # polygon adalah shapely polygon (WGS84 assumed?) - kita ambil koordinatnya dalam lon/lat
     if polygon.geom_type == "Polygon":
         coords = [list(polygon.exterior.coords)]
     elif polygon.geom_type == "MultiPolygon":
-        coords = [list(p.exterior.coords) for p in polygon.geoms]
+        # ambil semua polygon, tapi untuk filterBounds kita bisa pakai polygon pertama
+        coords = [list(next(polygon.geoms).exterior.coords)]
     else:
-        raise Exception(f"❌ Geometry tipe {polygon.geom_type} tidak didukung.")
+        raise RuntimeError(f"Geometry tipe {polygon.geom_type} tidak didukung untuk query GEE.")
 
-    # Ambil polygon pertama (jika banyak)
     ee_poly = ee.Geometry.Polygon(coords[0])
 
-    # Dataset Bangunan
-    buildings = ee.FeatureCollection("GOOGLE/Research/open-buildings/v1/polygons").filterBounds(ee_poly)
+    # Feature collections (batasi jumlah fitur)
+    buildings_fc = ee.FeatureCollection("GOOGLE/Research/open-buildings/v1/polygons").filterBounds(ee_poly)
+    roads_fc = ee.FeatureCollection("projects/google/OpenStreetMap/roads").filterBounds(ee_poly)
 
-    # Dataset Jalan
-    roads = ee.FeatureCollection("projects/google/OpenStreetMap/roads").filterBounds(ee_poly)
-
-    buildings_gdf = gpd.GeoDataFrame.from_features(buildings.getInfo())
-    roads_gdf = gpd.GeoDataFrame.from_features(roads.getInfo())
+    buildings_gdf = gee_featurecollection_to_geodataframe(buildings_fc, max_features=max_features)
+    roads_gdf = gee_featurecollection_to_geodataframe(roads_fc, max_features=max_features)
 
     return buildings_gdf, roads_gdf
 
@@ -89,11 +191,29 @@ def export_to_dxf(boundary_poly, buildings_gdf, roads_gdf, polygon_crs, dxf_path
     doc = ezdxf.new()
     msp = doc.modelspace()
 
-    buildings_gdf = buildings_gdf.to_crs(TARGET_EPSG)
-    roads_gdf = roads_gdf.to_crs(TARGET_EPSG)
-    boundary_poly = gpd.GeoSeries([boundary_poly], crs=polygon_crs).to_crs(TARGET_EPSG).iloc[0]
+    # Pastikan semua gdf punya CRS; jika None, anggap EPSG:4326
+    if buildings_gdf is None:
+        buildings_gdf = gpd.GeoDataFrame(columns=["geometry"], crs=polygon_crs or "EPSG:4326")
+    if roads_gdf is None:
+        roads_gdf = gpd.GeoDataFrame(columns=["geometry"], crs=polygon_crs or "EPSG:4326")
 
-    bounds = list(boundary_poly.exterior.coords)
+    if buildings_gdf.crs is None:
+        buildings_gdf.set_crs(polygon_crs or "EPSG:4326", inplace=True)
+    if roads_gdf.crs is None:
+        roads_gdf.set_crs(polygon_crs or "EPSG:4326", inplace=True)
+
+    # reprojeksi ke target
+    try:
+        buildings_gdf = buildings_gdf.to_crs(TARGET_EPSG)
+        roads_gdf = roads_gdf.to_crs(TARGET_EPSG)
+    except Exception as e:
+        raise RuntimeError(f"Gagal transform CRS features ke {TARGET_EPSG}. Pesan: {e}")
+
+    boundary_series = gpd.GeoSeries([boundary_poly], crs=polygon_crs or "EPSG:4326")
+    boundary_series = boundary_series.to_crs(TARGET_EPSG)
+    boundary_poly_utm = boundary_series.iloc[0]
+
+    bounds = list(boundary_poly_utm.exterior.coords)
     min_x = min(x for x, y in bounds)
     min_y = min(y for x, y in bounds)
 
@@ -101,22 +221,29 @@ def export_to_dxf(boundary_poly, buildings_gdf, roads_gdf, polygon_crs, dxf_path
         return [(x - min_x, y - min_y) for x, y in coords]
 
     # Boundary
-    if boundary_poly.geom_type == 'Polygon':
-        msp.add_lwpolyline(offset_coords(boundary_poly.exterior.coords), dxfattribs={"layer": "BOUNDARY"})
-    elif boundary_poly.geom_type == 'MultiPolygon':
-        for p in boundary_poly.geoms:
+    if boundary_poly_utm.geom_type == 'Polygon':
+        msp.add_lwpolyline(offset_coords(boundary_poly_utm.exterior.coords), dxfattribs={"layer": "BOUNDARY"})
+    elif boundary_poly_utm.geom_type == 'MultiPolygon':
+        for p in boundary_poly_utm.geoms:
             msp.add_lwpolyline(offset_coords(p.exterior.coords), dxfattribs={"layer": "BOUNDARY"})
 
-    # Bangunan
+    # Buildings
     for geom in buildings_gdf.geometry:
+        if geom is None:
+            continue
         if isinstance(geom, Polygon):
             msp.add_lwpolyline(offset_coords(geom.exterior.coords), dxfattribs={"layer": "BUILDINGS"})
         elif isinstance(geom, MultiPolygon):
             for p in geom.geoms:
                 msp.add_lwpolyline(offset_coords(p.exterior.coords), dxfattribs={"layer": "BUILDINGS"})
+        else:
+            # kalau geometry point/line skip
+            continue
 
-    # Jalan
+    # Roads (lines)
     for geom in roads_gdf.geometry:
+        if geom is None:
+            continue
         if isinstance(geom, LineString):
             msp.add_lwpolyline(offset_coords(geom.coords), dxfattribs={"layer": "ROADS"})
         elif isinstance(geom, MultiLineString):
@@ -126,47 +253,57 @@ def export_to_dxf(boundary_poly, buildings_gdf, roads_gdf, polygon_crs, dxf_path
     doc.set_modelspace_vport(height=10000)
     doc.saveas(dxf_path)
 
-def process_kml_to_dxf(kml_path, output_dir):
+def process_kml_to_dxf(kml_path, output_dir, max_features=DEFAULT_MAX_FEATURES):
     os.makedirs(output_dir, exist_ok=True)
-    polygon, polygon_crs = extract_polygon_from_kml(kml_path)
-    buildings_gdf, roads_gdf = get_buildings_and_roads_from_gee(polygon)
+
+    boundary_poly, polygon_crs = read_kml_to_polygons(kml_path)
+    buildings_gdf, roads_gdf = get_buildings_and_roads_from_gee(boundary_poly, max_features=max_features)
 
     if buildings_gdf.empty and roads_gdf.empty:
-        raise Exception("❌ Tidak ada bangunan atau jalan ditemukan di area ini.")
+        raise RuntimeError("Tidak ada bangunan atau jalan ditemukan di area ini (hasil kosong). Coba periksa area KML apakah terlalu kecil/terlalu jauh dari dataset GEE, atau naikkan max_features.")
 
     dxf_path = os.path.join(output_dir, "map_utm60.dxf")
-    export_to_dxf(polygon, buildings_gdf, roads_gdf, polygon_crs, dxf_path)
+    export_to_dxf(boundary_poly, buildings_gdf, roads_gdf, polygon_crs, dxf_path)
     return dxf_path
 
 # ==============================
-# UI Streamlit
+# Streamlit UI
 # ==============================
 def run_app():
     st.title("🏗️ KML → DXF (Google Earth Engine, UTM 60)")
-    st.caption("Upload file .KML (boundary cluster), hasil: DXF dengan bangunan & jalan dari GEE.")
+    st.caption("Upload file .KML (boundary cluster). Kode akan mengambil bangunan & jalan dari GEE dan mengekspor DXF.")
+
+    # inisialisasi EE
+    try:
+        init_ee_from_streamlit_secrets()
+    except Exception as e:
+        st.error(f"Gagal inisialisasi Earth Engine: {e}")
+        st.stop()
+
+    st.markdown("**Pengaturan:**")
+    max_features = st.number_input("Batas fitur GEE (max_features)", value=DEFAULT_MAX_FEATURES, min_value=100, max_value=100000, step=100)
+    output_dir = "/tmp/output"
 
     kml_file = st.file_uploader("Upload file .KML", type=["kml"])
+    if not kml_file:
+        st.info("Silakan upload file KML boundary.")
+        return
 
-    if kml_file:
-        with st.spinner("💫 Memproses data dari GEE..."):
+    if st.button("Proses dan Ekspor ke DXF"):
+        with st.spinner("Memproses... silakan tunggu (tergantung ukuran area dan koneksi ke GEE)..."):
             try:
-                temp_input = f"/tmp/{kml_file.name}"
+                temp_input = os.path.join(tempfile.gettempdir(), kml_file.name)
                 with open(temp_input, "wb") as f:
                     f.write(kml_file.read())
 
-                output_dir = "/tmp/output"
-                dxf_path = process_kml_to_dxf(temp_input, output_dir)
+                dxf_path = process_kml_to_dxf(temp_input, output_dir, max_features=max_features)
 
-                st.success("✅ Berhasil diekspor ke DXF (UTM 60)!")
+                st.success("Berhasil diekspor ke DXF (UTM 60).")
                 with open(dxf_path, "rb") as f:
-                    st.download_button("⬇️ Download DXF", data=f, file_name="map_utm60.dxf")
+                    st.download_button("⬇️ Download DXF", data=f, file_name=os.path.basename(dxf_path))
 
             except Exception as e:
-                st.error(f"❌ Terjadi kesalahan: {e}")
+                st.error(f"Terjadi kesalahan: {e}")
 
 if __name__ == "__main__":
     run_app()
-
-
-
-
