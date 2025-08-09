@@ -187,18 +187,18 @@ def detect_buildings_and_roads_from_geotiff(geotiff_path, boundary_shapely, mode
             img = np.dstack([arr[0], arr[1], arr[2]])
             if img.dtype != np.uint8:
                 img = ((img - img.min()) / (img.max() - img.min()) * 255).astype(np.uint8)
-            img_bgr = cv2.cvtColor(img, cv2.COLOR_RGB2BGR)
+            # dari RGB ke BGR tidak perlu, cukup RGB
+            img_for_yolo = img
         else:
             gray = arr[0]
             if gray.dtype != np.uint8:
                 gray = ((gray - gray.min()) / (gray.max() - gray.min()) * 255).astype(np.uint8)
-            img_bgr = cv2.cvtColor(gray, cv2.COLOR_GRAY2BGR)
+            img_for_yolo = np.stack([gray]*3, axis=-1)  # buat jadi 3 channel
 
     if progress_callback:
         progress_callback(60, "Menjalankan YOLOv8 untuk deteksi bangunan...")
 
-    results = model.predict(source=img_bgr, conf=0.3, verbose=False)
-
+    results = model.predict(source=img_for_yolo, conf=0.3, verbose=False)
     boxes = results[0].boxes.xyxy.cpu().numpy()
 
     if progress_callback:
@@ -220,20 +220,29 @@ def detect_buildings_and_roads_from_geotiff(geotiff_path, boundary_shapely, mode
     if progress_callback:
         progress_callback(80, "Mendeteksi jalan...")
 
-    gray = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2GRAY)
-    edges = cv2.Canny(gray, 50, 150, apertureSize=3)
-    edges = cv2.dilate(edges, cv2.getStructuringElement(cv2.MORPH_RECT, (3,3)), iterations=1)
-    lines = cv2.HoughLinesP(edges, rho=1, theta=np.pi/180, threshold=80, minLineLength=30, maxLineGap=10)
-    if lines is not None:
-        for l in lines:
-            x1,y1,x2,y2 = l[0]
-            lon1, lat1 = rio_transform.xy(transform, y1, x1)
-            lon2, lat2 = rio_transform.xy(transform, y2, x2)
-            line = LineString([(lon1, lat1), (lon2, lat2)])
-            if line.intersects(boundary_shapely):
-                roads.append(line)
+    # Deteksi jalan tanpa cv2: gunakan skimage
+    # Konversi ke grayscale
+    gray_img = color.rgb2gray(img_for_yolo)
+
+    # Edge detection pakai Canny
+    edges = feature.canny(gray_img, sigma=1.0)
+
+    # Perbaiki edges dengan dilasi
+    edges_dilated = morphology.dilation(edges, morphology.square(3))
+
+    # Line detection pakai probabilistic Hough transform
+    lines = sk_transform.probabilistic_hough_line(edges_dilated, threshold=10, line_length=30, line_gap=10)
+
+    for line in lines:
+        (x1, y1), (x2, y2) = line
+        lon1, lat1 = rio_transform.xy(transform, int(y1), int(x1))
+        lon2, lat2 = rio_transform.xy(transform, int(y2), int(x2))
+        line_geom = LineString([(lon1, lat1), (lon2, lat2)])
+        if line_geom.intersects(boundary_shapely):
+            roads.append(line_geom)
 
     return buildings, roads
+
 
 # --- Export ke DXF dengan layer terpisah ---
 def export_to_dxf(boundary_shapely, buildings_list, roads_list, out_path):
@@ -430,3 +439,4 @@ def run_app():
 
 if __name__ == "__main__":
     run_app()
+
