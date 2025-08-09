@@ -21,8 +21,6 @@ from ultralytics import YOLO  # optional; use your segmentation framework
 import ezdxf
 import ee
 import requests
-from kmz_parser import parse_kmz
-from shapely.ops import unary_union
 
 st.set_page_config(page_title="KMZ → DXF (GEE)", layout="wide")
 
@@ -38,34 +36,6 @@ PREFERRED_COLLECTIONS = [
 ]
 
 # ---------- Helpers: KML/KMZ ----------
-def fix_geometry(geom):
-    try:
-        if not geom.is_valid:
-            geom = geom.buffer(0)
-        return geom
-    except Exception as e:
-        print(f"[WARNING] Gagal perbaiki geometry: {e}")
-        return None
-
-def load_kmz_with_fix(kmz_path):
-    geoms = parse_kmz(kmz_path)
-    fixed_geoms = []
-    for g in geoms:
-        g = fix_geometry(g)
-        if g:
-            fixed_geoms.append(g)
-    return fixed_geoms
-
-if __name__ == "__main__":
-    kmz_file = "data/contoh.kmz"
-    geoms = load_kmz_with_fix(kmz_file)
-
-    if not geoms:
-        print("Tidak ada geometry valid yang ditemukan.")
-    else:
-        merged_geom = unary_union(geoms)
-        print(f"Berhasil load {len(geoms)} geometry valid dari KMZ.")
-
 def extract_first_kml_from_kmz(kmz_path):
     with zipfile.ZipFile(kmz_path, 'r') as zf:
         for name in zf.namelist():
