@@ -11,5 +11,3 @@ requests
 pyproj
 rasterio==1.3.6
 ultralytics>=8.0.20
-scikit-image
-
