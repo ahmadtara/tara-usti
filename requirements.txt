@@ -4,10 +4,8 @@ earthengine-api
 geopandas
 shapely
 numpy
-opencv-python-headless<4.10
+opencv-python-headless==4.9.0.80
 ezdxf
 Pillow
 requests
 pyproj
-
-
