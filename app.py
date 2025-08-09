@@ -47,24 +47,21 @@ def fix_geometry(geom):
         print(f"[WARNING] Gagal perbaiki geometry: {e}")
         return None
 
-def load_kmz_with_fix(kmz_path):
-    geoms = parse_kmz(kmz_path)
-    fixed_geoms = []
-    for g in geoms:
-        g = fix_geometry(g)
-        if g:
-            fixed_geoms.append(g)
-    return fixed_geoms
+# Load dan perbaiki KMZ
+kmz_file = uploaded_file.name  # atau path file KMZ
+geoms = parse_kmz(kmz_file)
 
-if __name__ == "__main__":
-    kmz_file = "data/contoh.kmz"
-    geoms = load_kmz_with_fix(kmz_file)
+fixed_geoms = []
+for g in geoms:
+    fg = fix_geometry(g)
+    if fg is not None:
+        fixed_geoms.append(fg)
 
-    if not geoms:
-        print("Tidak ada geometry valid yang ditemukan.")
-    else:
-        merged_geom = unary_union(geoms)
-        print(f"Berhasil load {len(geoms)} geometry valid dari KMZ.")
+if not fixed_geoms:
+    st.error("❌ Tidak ada geometry valid yang ditemukan di KMZ.")
+else:
+    merged_geom = unary_union(fixed_geoms)
+    st.success(f"✅ Berhasil memproses {len(fixed_geoms)} geometry valid dari KMZ.")
 
 def extract_first_kml_from_kmz(kmz_path):
     with zipfile.ZipFile(kmz_path, 'r') as zf:
@@ -405,4 +402,5 @@ def run_app():
 
 if __name__ == "__main__":
     run_app()
+
 
