@@ -9,4 +9,5 @@ ezdxf
 Pillow
 requests
 pyproj
+rasterio
 
