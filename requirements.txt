@@ -4,10 +4,10 @@ earthengine-api
 geopandas
 shapely
 numpy
-opencv-python-headless
 ezdxf
 Pillow
 requests
 pyproj
 rasterio
-
+ultralytics
+opencv-python-headless
