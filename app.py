@@ -48,8 +48,16 @@ def extract_polygon_from_kml(kml_path):
 
 
 def get_buildings_and_roads_from_gee(polygon):
-    coords = list(polygon.exterior.coords)
-    ee_poly = ee.Geometry.Polygon(coords)
+    # Pastikan semua polygon jadi list koordinat
+    if polygon.geom_type == "Polygon":
+        coords = [list(polygon.exterior.coords)]
+    elif polygon.geom_type == "MultiPolygon":
+        coords = [list(p.exterior.coords) for p in polygon.geoms]
+    else:
+        raise Exception(f"❌ Geometry tipe {polygon.geom_type} tidak didukung.")
+
+    # Ambil polygon pertama (jika banyak)
+    ee_poly = ee.Geometry.Polygon(coords[0])
 
     # Dataset Bangunan
     buildings = ee.FeatureCollection("GOOGLE/Research/open-buildings/v1/polygons").filterBounds(ee_poly)
@@ -143,4 +151,5 @@ def run_app():
 
 if __name__ == "__main__":
     run_app()
+
 
