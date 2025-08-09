@@ -11,13 +11,14 @@ import geopandas as gpd
 import ezdxf
 import ee
 from xml.etree import ElementTree as ET
-from shapely.geometry import Polygon, MultiPolygon, shape, Point, mapping, LineString
+from shapely.geometry import Polygon, MultiPolygon, shape, Point, mapping, LineString, box
 from shapely.ops import unary_union
 from pyproj import Transformer
 import numpy as np
 import cv2
 import rasterio
 from rasterio import transform as rio_transform
+from rasterio.merge import merge as rio_merge
 
 st.set_page_config(page_title="KMZ → DXF (Satellite + Rectangle Detection)", layout="wide")
 
@@ -165,28 +166,134 @@ def get_best_image_for_region(region_geojson, start_date_str, end_date_str, desi
 
     raise RuntimeError("Tidak ada koleksi imagery tersedia di area ini untuk rentang tanggal yang diberikan.")
 
-# ---------- Download GeoTIFF from ee.Image ----------
-def download_image_to_geotiff(ee_image, region_geojson, scale, out_path, max_pixels=1e9):
-    params = {
-        'scale': float(scale),
-        'region': json.dumps(region_geojson),
-        'format': 'GEO_TIFF',
-        'crs': 'EPSG:4326'
-    }
-    try:
-        url = ee_image.getDownloadURL(params)
-    except Exception as e:
-        raise RuntimeError(f"Gagal membuat download URL dari EE: {e}")
+# ---------- Download GeoTIFF from ee.Image (split-tiles + merge) ----------
+def split_polygon_to_tiles(polygon, tile_size_deg=0.02):
+    """Bagi polygon menjadi grid tile kotak kecil dengan ukuran tile_size_deg (derajat)."""
+    minx, miny, maxx, maxy = polygon.bounds
+    tiles = []
+    x = minx
+    # small epsilon to avoid infinite loop if bounds are exact
+    eps = 1e-12
+    while x + eps < maxx:
+        y = miny
+        while y + eps < maxy:
+            tile = box(x, y, min(x + tile_size_deg, maxx), min(y + tile_size_deg, maxy))
+            inter = polygon.intersection(tile)
+            if not inter.is_empty:
+                tiles.append(inter)
+            y += tile_size_deg
+        x += tile_size_deg
+    return tiles
 
+def download_image_to_geotiff(ee_image, region_geojson, scale, out_path, max_pixels=1e9, tile_size_deg=0.02, progress_callback=None):
+    """
+    Download EE image by splitting the region into tiles (tile_size_deg degrees),
+    downloading each tile via getDownloadURL, then merging them into one GeoTIFF.
+    - ee_image: ee.Image already clipped or ready
+    - region_geojson: geojson mapping(boundary) (passed but we prefer the shapely polygon for splitting)
+    - scale: meters per pixel (float)
+    - out_path: final output path
+    - tile_size_deg: tile size in degrees (float) — smaller = smaller requests but more tiles
+    """
+    # try to reconstruct shapely polygon from region_geojson
     try:
-        r = requests.get(url, stream=True, timeout=1200)
-        r.raise_for_status()
-        with open(out_path, 'wb') as f:
-            for chunk in r.iter_content(chunk_size=8192):
-                if chunk:
-                    f.write(chunk)
-    except Exception as e:
-        raise RuntimeError(f"Gagal mengunduh GeoTIFF dari URL: {e}")
+        from shapely.geometry import shape as shapely_shape
+        region_shape = shapely_shape(region_geojson) if isinstance(region_geojson, dict) else None
+    except Exception:
+        region_shape = None
+
+    if region_shape is None:
+        # as a fallback, use the bbox from region_geojson if possible
+        try:
+            coords = region_geojson.get('coordinates')[0]
+            region_shape = Polygon(coords)
+        except Exception:
+            raise RuntimeError("Tidak dapat membangun shapely polygon dari region_geojson untuk split tiles.")
+
+    tiles = split_polygon_to_tiles(region_shape, tile_size_deg=tile_size_deg)
+    if not tiles:
+        raise RuntimeError("Split tiles kosong — cek boundary atau ukuran tile.")
+
+    temp_files = []
+    src_files = []
+    errors = []
+
+    for idx, tile in enumerate(tiles, start=1):
+        if progress_callback:
+            pct = int(50 * idx / len(tiles))  # progress up to ~50% during downloads
+            progress_callback(pct, f"Mengunduh tile {idx}/{len(tiles)}...")
+        region = mapping(tile)
+        params = {
+            'scale': float(scale),
+            'region': json.dumps(region),
+            'format': 'GEO_TIFF',
+            'crs': 'EPSG:4326'
+        }
+        try:
+            url = ee_image.getDownloadURL(params)
+        except Exception as e:
+            errors.append(f"Tile {idx} create URL error: {e}")
+            continue
+
+        temp_tif = tempfile.NamedTemporaryFile(delete=False, suffix=f"_tile{idx}.tif").name
+        try:
+            r = requests.get(url, stream=True, timeout=1200)
+            r.raise_for_status()
+            with open(temp_tif, 'wb') as f:
+                for chunk in r.iter_content(chunk_size=8192):
+                    if chunk:
+                        f.write(chunk)
+            temp_files.append(temp_tif)
+        except Exception as e:
+            errors.append(f"Tile {idx} download error: {e}")
+            # remove partial file if exists
+            try:
+                if os.path.exists(temp_tif):
+                    os.remove(temp_tif)
+            except Exception:
+                pass
+            continue
+
+    if not temp_files:
+        raise RuntimeError("Gagal mengunduh semua tile. Errors: " + "; ".join(errors))
+
+    # open all temp files and merge
+    try:
+        for p in temp_files:
+            src = rasterio.open(p)
+            src_files.append(src)
+        mosaic, out_trans = rio_merge(src_files)
+        out_meta = src_files[0].meta.copy()
+        out_meta.update({
+            "driver": "GTiff",
+            "height": mosaic.shape[1],
+            "width": mosaic.shape[2],
+            "transform": out_trans,
+            "crs": src_files[0].crs
+        })
+
+        # progress mid -> 75-90% while writing
+        if progress_callback:
+            progress_callback(80, "Menggabungkan tile menjadi satu GeoTIFF...")
+
+        with rasterio.open(out_path, "w", **out_meta) as dest:
+            dest.write(mosaic)
+
+    finally:
+        # close and remove temp files
+        for s in src_files:
+            try:
+                s.close()
+            except Exception:
+                pass
+        for p in temp_files:
+            try:
+                os.remove(p)
+            except Exception:
+                pass
+
+    if progress_callback:
+        progress_callback(95, "Selesai mengunduh dan menggabungkan.")
 
     return out_path
 
@@ -249,6 +356,7 @@ def detect_buildings_and_roads_from_geotiff(geotiff_path, boundary_shapely, prog
 
         if progress_callback:
             progress_callback(75, "Mendeteksi tepi untuk jalan...")
+
         edges = cv2.Canny(gray, 50, 150, apertureSize=3)
         edges = cv2.dilate(edges, cv2.getStructuringElement(cv2.MORPH_RECT, (3,3)), iterations=1)
         lines = cv2.HoughLinesP(edges, rho=1, theta=np.pi/180, threshold=80, minLineLength=30, maxLineGap=10)
@@ -398,7 +506,13 @@ def run_app():
             status.text("55% — Membuat dan mengunduh GeoTIFF dari GEE (ini bisa lama)...")
             progress_bar.progress(55)
             out_tif = tempfile.NamedTemporaryFile(delete=False, suffix=".tif").name
-            download_image_to_geotiff(img, mapping(boundary), DESIRED_SCALE, out_tif)
+
+            # gunakan versi split (tile_size_deg bisa diubah; 0.02 ~ ~2km tergantung latitude)
+            def dl_progress(pct, txt):
+                status.text(f"{pct}% — {txt}")
+                progress_bar.progress(min(99, pct))
+
+            download_image_to_geotiff(img, mapping(boundary), DESIRED_SCALE, out_tif, tile_size_deg=0.02, progress_callback=dl_progress)
             status.text("65% — GeoTIFF diunduh.")
             progress_bar.progress(65)
         except Exception as e:
@@ -442,6 +556,9 @@ def run_app():
             except Exception: pass
             try:
                 if os.path.exists(kml_path): os.remove(kml_path)
+            except Exception: pass
+            try:
+                if os.path.exists(out_tif): os.remove(out_tif)
             except Exception: pass
 
 if __name__ == "__main__":
