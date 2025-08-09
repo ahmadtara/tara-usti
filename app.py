@@ -4,24 +4,38 @@ import zipfile
 import tempfile
 import json
 import time
+import requests
 import streamlit as st
 import geopandas as gpd
 import ezdxf
 import ee
 from xml.etree import ElementTree as ET
-from shapely.geometry import Polygon, MultiPolygon, shape, mapping, LineString, MultiLineString
+from shapely.geometry import Polygon, MultiPolygon, shape, Point, mapping, LineString
 from shapely.ops import unary_union
 from pyproj import Transformer
+import numpy as np
+import cv2
+import rasterio
+from rasterio import windows
 
-st.set_page_config(page_title="KMZ → DXF (GEE Buildings & Roads)", layout="wide")
+st.set_page_config(page_title="KMZ → DXF (Satellite + Rectangle Detection)", layout="wide")
 
 # ---------- Config ----------
-TARGET_EPSG = "EPSG:32760"   # UTM 60S — ganti jika perlu
-DEFAULT_MAX_FEATURES_NONE = True  # kita pakai None (ambil semua) sesuai permintaan
+TARGET_EPSG = "EPSG:32760"    # target reprojection for DXF (UTM zone 60S). ganti jika perlu
+DESIRED_SCALE = 0.5           # meters per pixel target (attempt)
+PREFERRED_COLLECTIONS = [
+    # prioritized collections to attempt for higher-res imagery
+    # NOTE: many commercial collections require access (Maxar/Planet).
+    # If you have a licensed collection name, place it here first.
+    # Example placeholders (may require access): "MAXAR/2D", "PLANET/..."
+    # We'll try NAIP (US only, ~1m) then Sentinel-2 (~10m) as fallback.
+    "USDA/NAIP/DOQQ",           # NAIP (approx 1m) — US only
+    # "OPENAI/MAXAR_SAMPLE",    # (placeholder) — commercial; uncomment if available
+    "COPERNICUS/S2_SR"          # Sentinel-2 surface reflectance (~10m)
+]
 
-# ---------- Utilities: KMZ / KML ----------
+# ---------- Helpers: KMZ / KML ----------
 def extract_first_kml_from_kmz(kmz_path):
-    """Ekstrak file .kml pertama dari KMZ dan kembalikan path sementara serta nama internal."""
     with zipfile.ZipFile(kmz_path, 'r') as zf:
         for name in zf.namelist():
             if name.lower().endswith('.kml'):
@@ -32,7 +46,6 @@ def extract_first_kml_from_kmz(kmz_path):
     raise RuntimeError("Tidak ditemukan file .kml di dalam KMZ.")
 
 def parse_coordinates_text(text):
-    """Parse isi <coordinates> tag KML menjadi list (lon, lat) tuples."""
     coords = []
     if not text:
         return coords
@@ -48,24 +61,16 @@ def parse_coordinates_text(text):
     return coords
 
 def find_boundary_polygons_from_kml(kml_path, folder_name="BOUNDARY CLUSTER"):
-    """
-    Cari semua polygon di dalam Folder dengan nama folder_name (case-insensitive).
-    Jika tidak ditemukan folder yang match, fallback: ambil semua polygon di file KML.
-    Return: shapely Polygon or MultiPolygon in EPSG:4326
-    """
     tree = ET.parse(kml_path)
     root = tree.getroot()
     ns = {"kml": "http://www.opengis.net/kml/2.2"}
 
     polygons = []
-
-    # Cari folder yang cocok
     for folder in root.findall(".//kml:Folder", ns):
         name_elem = folder.find("kml:name", ns)
         if name_elem is None:
             continue
         if name_elem.text and name_elem.text.strip().upper() == folder_name.upper():
-            # Ambil semua coordinates di subtree folder
             for coords_elem in folder.findall(".//kml:coordinates", ns):
                 coords = parse_coordinates_text(coords_elem.text)
                 if len(coords) >= 4:
@@ -77,8 +82,7 @@ def find_boundary_polygons_from_kml(kml_path, folder_name="BOUNDARY CLUSTER"):
                             polygons.append(poly)
                     except Exception:
                         continue
-
-    # Fallback: ambil semua polygon di file
+    # fallback: all coords in file
     if not polygons:
         for coords_elem in root.findall(".//kml:coordinates", ns):
             coords = parse_coordinates_text(coords_elem.text)
@@ -93,30 +97,25 @@ def find_boundary_polygons_from_kml(kml_path, folder_name="BOUNDARY CLUSTER"):
                     continue
 
     if not polygons:
-        raise RuntimeError("Tidak ditemukan polygon boundary di KML (folder BOUNDARY CLUSTER atau global).")
+        raise RuntimeError("Tidak ditemukan polygon boundary di KML.")
 
     merged = unary_union(polygons)
     if merged.is_empty:
         raise RuntimeError("Hasil union polygon kosong.")
-    # Pastikan return Polygon / MultiPolygon
     if isinstance(merged, (Polygon, MultiPolygon)):
         return merged
-    # Jika geometry collection, filter polygon parts
+    # filter polygon parts
     poly_parts = [g for g in merged.geoms if isinstance(g, Polygon)]
     if not poly_parts:
-        raise RuntimeError("Parsing KML tidak menghasilkan polygon yang valid.")
+        raise RuntimeError("Parsing KML tidak menghasilkan polygon valid.")
     return unary_union(poly_parts)
 
-# ---------- Google Earth Engine init & query ----------
-def init_ee_from_secrets():
-    """Inisialisasi EE dengan service account JSON di st.secrets['gee_service_account']"""
+# ---------- Initialize Earth Engine ----------
+def init_ee_from_st_secrets():
     if "gee_service_account" not in st.secrets:
-        raise RuntimeError("st.secrets tidak berisi 'gee_service_account'. Masukkan service account JSON GEE.")
+        raise RuntimeError("st.secrets tidak berisi 'gee_service_account'. Masukkan service account JSON.")
     svc = st.secrets["gee_service_account"]
-    if isinstance(svc, str):
-        svc_dict = json.loads(svc)
-    else:
-        svc_dict = dict(svc)
+    svc_dict = json.loads(svc) if isinstance(svc, str) else dict(svc)
     tmp_key = tempfile.NamedTemporaryFile(delete=False, suffix=".json").name
     with open(tmp_key, "w") as f:
         json.dump(svc_dict, f)
@@ -131,239 +130,354 @@ def init_ee_from_secrets():
     except Exception:
         pass
 
-def ee_fc_to_gdf(fc, take_all=True):
+# ---------- Imagery: select best available collection ----------
+def get_best_image_for_region(region_geojson, desired_scale=DESIRED_SCALE):
     """
-    Convert ee.FeatureCollection -> GeoDataFrame.
-    If take_all True => use fc.getInfo() (no limit). Beware large results.
+    Try preferred collections; return ee.Image clipped to region if available.
+    If none high-res available, return combined mosaic (e.g., Sentinel-2 median).
     """
+    # Try each candidate
+    for coll_id in PREFERRED_COLLECTIONS:
+        try:
+            coll = ee.ImageCollection(coll_id).filterBounds(ee.Geometry(region_geojson)).filterDate('2018-01-01', ee.Date().format('YYYY-MM-dd'))
+            count = coll.size().getInfo()
+            if count and int(count) > 0:
+                # pick median composite
+                img = coll.median().clip(ee.Geometry(region_geojson))
+                st.info(f"Memakai koleksi: {coll_id} (count={count}).")
+                return img, coll_id
+        except Exception:
+            # collection may not exist or access denied
+            continue
+    # Fallback: try Sentinel-2 global
     try:
-        if take_all:
-            info = fc.getInfo()
-        else:
-            info = fc.limit(10000).getInfo()  # safety default
+        coll = ee.ImageCollection("COPERNICUS/S2").filterBounds(ee.Geometry(region_geojson)).filterDate('2019-01-01', ee.Date().format('YYYY-MM-dd'))
+        if coll.size().getInfo() > 0:
+            img = coll.median().clip(ee.Geometry(region_geojson))
+            st.info("Fallback memakai COPERNICUS/S2.")
+            return img, "COPERNICUS/S2"
     except Exception as e:
-        raise RuntimeError(f"Gagal mengambil data dari GEE: {e}")
+        raise RuntimeError(f"Gagal mengambil imagery dari GEE: {e}")
+    raise RuntimeError("Tidak ada koleksi imagery tersedia di area ini.")
 
-    if not info or "features" not in info or len(info["features"]) == 0:
-        return gpd.GeoDataFrame(columns=["geometry"], crs="EPSG:4326")
-
+# ---------- Download GeoTIFF from ee.Image ----------
+def download_image_to_geotiff(ee_image, region_geojson, scale, out_path, max_pixels=1e9):
+    """
+    Request a GeoTIFF download URL from EE and download to out_path.
+    Returns out_path when downloaded.
+    """
+    # build download parameters
+    params = {
+        'scale': float(scale),
+        'region': json.dumps(region_geojson),
+        'format': 'GEO_TIFF',
+        'crs': 'EPSG:4326'
+    }
     try:
-        gdf = gpd.GeoDataFrame.from_features(info)
-    except Exception:
-        # fallback: manual build
-        features = info.get("features", [])
-        geoms = []
-        props = []
-        for f in features:
-            geom = f.get("geometry")
-            if geom:
-                try:
-                    geoms.append(shape(geom))
-                    props.append(f.get("properties", {}))
-                except Exception:
-                    continue
-        if geoms:
-            gdf = gpd.GeoDataFrame(props, geometry=geoms, crs="EPSG:4326")
+        url = ee_image.getDownloadURL(params)
+    except Exception as e:
+        raise RuntimeError(f"Gagal membuat download URL dari EE: {e}")
+
+    # download via requests
+    try:
+        r = requests.get(url, stream=True, timeout=600)
+        r.raise_for_status()
+        with open(out_path, 'wb') as f:
+            for chunk in r.iter_content(chunk_size=8192):
+                if chunk:
+                    f.write(chunk)
+    except Exception as e:
+        raise RuntimeError(f"Gagal mengunduh GeoTIFF dari URL: {e}")
+
+    return out_path
+
+# ---------- Image processing: detect buildings (rectangles) & roads (lines) ----------
+def detect_buildings_and_roads_from_geotiff(geotiff_path, boundary_shapely, progress_callback=None):
+    """
+    - Open GeoTIFF with rasterio
+    - Convert to grayscale or pan-sharpened composite
+    - Process with OpenCV: findContours -> approxPolyDP untuk rectangles
+    - For roads: Canny -> HoughLinesP
+    Returns:
+      list_of_building_polygons_in_lonlat, list_of_lines_in_lonlat
+    """
+    buildings = []
+    roads = []
+
+    with rasterio.open(geotiff_path) as src:
+        # read an RGB composite if possible (bands order depends on file)
+        bands = src.count
+        # prefer first 3 bands as RGB if available
+        if bands >= 3:
+            arr = src.read([1,2,3])  # shape (3, H, W)
         else:
-            gdf = gpd.GeoDataFrame(columns=["geometry"], crs="EPSG:4326")
+            arr = src.read(1)[None,:,:]  # single band
 
-    if gdf.crs is None:
-        gdf.set_crs("EPSG:4326", inplace=True)
-    return gdf
+        # build transform for pixel->lonlat
+        transform = src.transform
+        height = src.height
+        width = src.width
 
-def query_buildings_and_roads(boundary_shapely, take_all=True):
-    """
-    Query GEE for buildings and roads within boundary_shapely.
-    Return GeoDataFrames in EPSG:4326.
-    """
-    if isinstance(boundary_shapely, Polygon):
-        coords = [list(boundary_shapely.exterior.coords)]
-    elif isinstance(boundary_shapely, MultiPolygon):
-        coords = [list(next(boundary_shapely.geoms).exterior.coords)]
-    else:
-        raise RuntimeError("Boundary bukan Polygon / MultiPolygon")
+        # convert to uint8 image for OpenCV
+        if arr.shape[0] >= 3:
+            img = np.dstack([arr[0], arr[1], arr[2]])
+            # normalize if needed
+            if img.dtype != np.uint8:
+                img = ((img - img.min()) / (img.max() - img.min()) * 255).astype(np.uint8)
+            gray = cv2.cvtColor(img, cv2.COLOR_RGB2GRAY)
+        else:
+            gray = arr[0]
+            if gray.dtype != np.uint8:
+                gray = ((gray - gray.min()) / (gray.max() - gray.min()) * 255).astype(np.uint8)
 
-    ee_poly = ee.Geometry.Polygon(coords[0])
+        # Optional: equalize / denoise
+        gray = cv2.GaussianBlur(gray, (3,3), 0)
+        # Building detection via adaptive threshold + morphological ops
+        # Adjust parameters if needed
+        _, th = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+        # invert if background white
+        white_ratio = np.mean(th == 255)
+        if white_ratio > 0.6:
+            th = 255 - th
 
-    # Open Buildings polygons (Google research)
-    buildings_fc = ee.FeatureCollection("GOOGLE/Research/open-buildings/v1/polygons").filterBounds(ee_poly)
-    # OSM roads (project)
-    roads_fc = ee.FeatureCollection("projects/google/OpenStreetMap/roads").filterBounds(ee_poly)
+        # morphological opening to remove small noise, closing to fill building roofs
+        kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (5,5))
+        th = cv2.morphologyEx(th, cv2.MORPH_CLOSE, kernel, iterations=2)
+        th = cv2.morphologyEx(th, cv2.MORPH_OPEN, kernel, iterations=1)
 
-    # Convert
-    roads_gdf = ee_fc_to_gdf(roads_fc, take_all=take_all)
-    buildings_gdf = ee_fc_to_gdf(buildings_fc, take_all=take_all)
+        # find contours
+        contours, _ = cv2.findContours(th, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
 
-    return buildings_gdf, roads_gdf
+        # progress: contour detection done
+        if progress_callback:
+            progress_callback(60, "Memproses kontur untuk menemukan bangunan...")
 
-# ---------- Export DXF ----------
-def export_to_dxf(boundary_shapely, buildings_gdf, roads_gdf, out_path):
+        # iterate contours and approximate polygons
+        for cnt in contours:
+            # ignore small areas
+            area = cv2.contourArea(cnt)
+            if area < 50:  # tune threshold as needed
+                continue
+            epsilon = 0.02 * cv2.arcLength(cnt, True)
+            approx = cv2.approxPolyDP(cnt, epsilon, True)
+            if len(approx) >= 4 and len(approx) <= 12:
+                # get polygon pixel coords
+                poly_px = [(int(pt[0][0]), int(pt[0][1])) for pt in approx]
+                # convert pixel coords to lonlat using rasterio transform
+                lonlat_poly = []
+                for px, py in poly_px:
+                    # rasterio transform: xy = transform * (col, row)
+                    x, y = rasterio.transform.xy(transform, py, px)  # note: row=y, col=x
+                    lonlat_poly.append((x, y))
+                # check if polygon centroid inside boundary
+                centroid = Point(np.mean([p[0] for p in lonlat_poly]), np.mean([p[1] for p in lonlat_poly]))
+                if not centroid.within(boundary_shapely):
+                    # optional: skip if outside
+                    continue
+                buildings.append(Polygon(lonlat_poly))
+
+        # Roads detection: use Canny on grayscale then HoughLinesP
+        if progress_callback:
+            progress_callback(75, "Mendeteksi tepi untuk jalan...")
+        edges = cv2.Canny(gray, 50, 150, apertureSize=3)
+        # dilate edges to make lines more continuous
+        edges = cv2.dilate(edges, cv2.getStructuringElement(cv2.MORPH_RECT, (3,3)), iterations=1)
+        # HoughLinesP expects (x,y) coords; returns lines in pixel coords
+        lines = cv2.HoughLinesP(edges, rho=1, theta=np.pi/180, threshold=80, minLineLength=30, maxLineGap=10)
+        if lines is not None:
+            for l in lines:
+                x1,y1,x2,y2 = l[0]
+                # convert to lonlat
+                lon1, lat1 = rasterio.transform.xy(transform, y1, x1)
+                lon2, lat2 = rasterio.transform.xy(transform, y2, x2)
+                line = LineString([(lon1, lat1), (lon2, lat2)])
+                # optionally clip to boundary: keep only if intersects
+                if line.intersects(boundary_shapely):
+                    roads.append(line)
+
+    return buildings, roads
+
+# ---------- Convert to DXF ----------
+def export_to_dxf_single_layer(boundary_shapely, buildings_list, roads_list, out_path):
     doc = ezdxf.new()
     msp = doc.modelspace()
 
-    # Ensure crs
-    if buildings_gdf is None:
-        buildings_gdf = gpd.GeoDataFrame(columns=["geometry"], crs="EPSG:4326")
-    if roads_gdf is None:
-        roads_gdf = gpd.GeoDataFrame(columns=["geometry"], crs="EPSG:4326")
-    if buildings_gdf.crs is None:
-        buildings_gdf.set_crs("EPSG:4326", inplace=True)
-    if roads_gdf.crs is None:
-        roads_gdf.set_crs("EPSG:4326", inplace=True)
+    # Reproject everything to TARGET_EPSG before writing
+    transformer = Transformer.from_crs("epsg:4326", TARGET_EPSG, always_xy=True)
 
-    # Reproject to target UTM
-    try:
-        buildings_utm = buildings_gdf.to_crs(TARGET_EPSG)
-        roads_utm = roads_gdf.to_crs(TARGET_EPSG)
-    except Exception as e:
-        raise RuntimeError(f"Gagal reprojeksi GDF ke {TARGET_EPSG}: {e}")
-
-    # Boundary -> utm
-    boundary_series = gpd.GeoSeries([boundary_shapely], crs="EPSG:4326").to_crs(TARGET_EPSG)
-    boundary_utm = boundary_series.iloc[0]
-
-    # Compute offset to make DXF coords smaller
-    if boundary_utm.geom_type == "Polygon":
-        bounds_coords = list(boundary_utm.exterior.coords)
+    # Convert boundary
+    if isinstance(boundary_shapely, Polygon):
+        bpolys = [boundary_shapely]
     else:
-        bounds_coords = list(next(boundary_utm.geoms).exterior.coords)
-    min_x = min(x for x, y in bounds_coords)
-    min_y = min(y for x, y in bounds_coords)
+        bpolys = list(boundary_shapely.geoms)
 
-    def offset(coords):
-        return [(x - min_x, y - min_y) for x, y in coords]
-
-    # Draw boundary
-    if boundary_utm.geom_type == "Polygon":
-        msp.add_lwpolyline(offset(list(boundary_utm.exterior.coords)), dxfattribs={"layer": "BOUNDARY"})
+    # compute global min for offset
+    all_coords = []
+    for p in bpolys:
+        all_coords.extend(list(p.exterior.coords))
+    if all_coords:
+        min_x = min(x for x,y in all_coords)
+        min_y = min(y for x,y in all_coords)
     else:
-        for p in boundary_utm.geoms:
-            msp.add_lwpolyline(offset(list(p.exterior.coords)), dxfattribs={"layer": "BOUNDARY"})
+        min_x = 0
+        min_y = 0
 
-    # Draw buildings (polygons) on layer BUILDINGS
-    for geom in buildings_utm.geometry:
-        if geom is None:
-            continue
-        if isinstance(geom, Polygon):
-            msp.add_lwpolyline(offset(list(geom.exterior.coords)), dxfattribs={"layer": "BUILDINGS"})
-        elif isinstance(geom, MultiPolygon):
-            for p in geom.geoms:
-                msp.add_lwpolyline(offset(list(p.exterior.coords)), dxfattribs={"layer": "BUILDINGS"})
+    def to_utm_and_offset(coords):
+        out = []
+        for lon, lat in coords:
+            x,y = transformer.transform(lon, lat)
+            out.append((x - min_x, y - min_y))
+        return out
 
-    # Draw roads (lines) on layer ROADS
-    for geom in roads_utm.geometry:
-        if geom is None:
+    # add buildings & roads to same layer "MAP"
+    layer_name = "MAP"
+
+    # boundary (draw outer poly)
+    for p in bpolys:
+        coords = to_utm_and_offset(list(p.exterior.coords))
+        msp.add_lwpolyline(coords, dxfattribs={"layer": layer_name})
+
+    # buildings
+    for poly in buildings_list:
+        try:
+            coords = to_utm_and_offset(list(poly.exterior.coords))
+            msp.add_lwpolyline(coords, dxfattribs={"layer": layer_name})
+        except Exception:
             continue
-        if isinstance(geom, LineString):
-            msp.add_lwpolyline(offset(list(geom.coords)), dxfattribs={"layer": "ROADS"})
-        elif isinstance(geom, MultiLineString):
-            for line in geom.geoms:
-                msp.add_lwpolyline(offset(list(line.coords)), dxfattribs={"layer": "ROADS"})
+
+    # roads
+    for line in roads_list:
+        try:
+            coords = to_utm_and_offset(list(line.coords))
+            msp.add_lwpolyline(coords, dxfattribs={"layer": layer_name})
+        except Exception:
+            continue
 
     doc.set_modelspace_vport(height=10000)
     doc.saveas(out_path)
 
 # ---------- Streamlit App ----------
 def run_app():
-    st.title("KMZ → DXF (GEE Buildings & Roads)")
-    st.write("Upload KMZ yang berisi boundary (Folder 'BOUNDARY CLUSTER'). Program akan mengambil bangunan & jalan dari GEE sesuai boundary dan meng-export DXF.")
-    st.markdown("**Penting:** aplikasi akan mengambil *semua* fitur dari GEE (tanpa limit). Untuk area besar proses bisa memakan waktu dan memory. Pastikan kredensial GEE ada di `st.secrets['gee_service_account']`.")
+    st.title("KMZ → DXF (Satellite + Rectangle Detection)")
+    st.markdown("""
+    Upload KMZ boundary. App akan mencoba mengambil citra resolusi tinggi (attempt 0.5 m/pix),
+    lalu mendeteksi kotak bangunan (approxPolyDP) dan jalan (Canny+Hough), lalu export DXF (single layer).
+    """)
+    st.info("Pastikan `st.secrets['gee_service_account']` sudah berisi service account JSON untuk Earth Engine.")
 
     uploaded = st.file_uploader("Upload file .kmz", type=["kmz"])
-    take_all_checkbox = st.checkbox("Ambil semua fitur dari GEE (tanpa batas)?", value=True, help="Jika dicentang: ambil semua fitur (fc.getInfo()). Untuk area luas, ini bisa berat.")
-    # progress placeholders
+    take_all_checkbox = st.checkbox("Ambil citra resolusi tertinggi yang tersedia (attempt 0.5m).", value=True)
+    run_button = st.button("Mulai proses (ambil citra & deteksi)")
+
+    # progress UI
     progress_bar = st.progress(0)
-    progress_text = st.empty()
+    status = st.empty()
 
     if not uploaded:
-        st.info("Silakan upload KMZ boundary untuk memulai.")
         return
 
-    # save uploaded kmz to temp
-    tmp_kmz = tempfile.NamedTemporaryFile(delete=False, suffix=".kmz").name
-    with open(tmp_kmz, "wb") as f:
-        f.write(uploaded.read())
-    st.success(f"KMZ tersimpan sementara: {os.path.basename(tmp_kmz)}")
-
-    try:
-        progress_text.text("10% — Mengekstrak KML dari KMZ...")
+    if run_button:
+        tmp_kmz = tempfile.NamedTemporaryFile(delete=False, suffix=".kmz").name
+        with open(tmp_kmz, "wb") as f:
+            f.write(uploaded.read())
+        status.text("10% — Ekstrak KML dari KMZ...")
         progress_bar.progress(10)
-        kml_path, inner_name = extract_first_kml_from_kmz(tmp_kmz)
-        progress_text.text(f"20% — Memakai KML internal: {inner_name}")
-        progress_bar.progress(20)
 
-        # parse boundary polygon
-        progress_text.text("25% — Mencari polygon boundary (folder 'BOUNDARY CLUSTER')...")
-        progress_bar.progress(25)
-        boundary_poly = find_boundary_polygons_from_kml(kml_path, folder_name="BOUNDARY CLUSTER")
-        progress_text.text("35% — Boundary polygon ditemukan.")
-        progress_bar.progress(35)
-        st.write("Boundary bbox (lon/lat):", boundary_poly.bounds)
-
-        # init GEE
-        progress_text.text("40% — Inisialisasi Google Earth Engine...")
-        progress_bar.progress(40)
-        init_ee_from_secrets()
-        progress_text.text("45% — GEE siap.")
-        progress_bar.progress(45)
-
-        # query roads
-        progress_text.text("55% — Mengambil data jalan dari GEE (OSM roads)...")
-        progress_bar.progress(55)
-        take_all = True if take_all_checkbox else False
-        # query both (we call query_buildings_and_roads, which will fetch both)
-        buildings_gdf, roads_gdf = query_buildings_and_roads(boundary_poly, take_all=take_all)
-        progress_text.text("75% — Data jalan & bangunan diunduh dari GEE.")
-        progress_bar.progress(75)
-
-        # clip to boundary (safety)
-        progress_text.text("80% — Memotong (clip) data sesuai boundary...")
-        progress_bar.progress(80)
-        boundary_gdf = gpd.GeoDataFrame({"geometry": [boundary_poly]}, crs="EPSG:4326")
         try:
-            if not buildings_gdf.empty:
-                buildings_gdf = gpd.clip(buildings_gdf, boundary_gdf)
-            if not roads_gdf.empty:
-                roads_gdf = gpd.clip(roads_gdf, boundary_gdf)
-        except Exception:
-            # fallback: spatial filtering by within/intersects
-            if not buildings_gdf.empty:
-                buildings_gdf = buildings_gdf[buildings_gdf.geometry.intersects(boundary_poly)]
-            if not roads_gdf.empty:
-                roads_gdf = roads_gdf[roads_gdf.geometry.intersects(boundary_poly)]
-        progress_text.text("85% — Selesai memotong data.")
-        progress_bar.progress(85)
+            kml_path, inner_name = extract_first_kml_from_kmz(tmp_kmz)
+            status.text(f"15% — Menggunakan internal KML: {inner_name}")
+            progress_bar.progress(15)
+        except Exception as e:
+            st.error(f"Gagal ekstrak KML: {e}")
+            return
 
-        # simple checks
-        st.write("Jumlah fitur bangunan setelah clip:", 0 if buildings_gdf.empty else len(buildings_gdf))
-        st.write("Jumlah fitur jalan setelah clip:", 0 if roads_gdf.empty else len(roads_gdf))
-
-        # export to DXF
-        progress_text.text("90% — Menyusun dan mengekspor DXF...")
-        progress_bar.progress(90)
-        out_dxf = tempfile.NamedTemporaryFile(delete=False, suffix=".dxf").name
-        export_to_dxf(boundary_poly, buildings_gdf, roads_gdf, out_dxf)
-        progress_text.text("100% — Selesai. DXF siap diunduh.")
-        progress_bar.progress(100)
-        st.success("DXF telah dibuat.")
-
-        with open(out_dxf, "rb") as f:
-            st.download_button("⬇️ Download DXF", f, file_name="map_buildings_roads.dxf")
-
-    except Exception as e:
-        st.error(f"Gagal: {e}")
-    finally:
-        # cleanup temp files if exist
         try:
-            if os.path.exists(tmp_kmz):
-                os.remove(tmp_kmz)
-        except Exception:
-            pass
+            status.text("20% — Mencari polygon boundary di KML...")
+            progress_bar.progress(20)
+            boundary = find_boundary_polygons_from_kml(kml_path, folder_name="BOUNDARY CLUSTER")
+            status.text("30% — Boundary ditemukan.")
+            progress_bar.progress(30)
+            st.write("Boundary bbox (lon/lat):", boundary.bounds)
+        except Exception as e:
+            st.error(f"Gagal parsing boundary: {e}")
+            return
+
+        # init EE
         try:
-            if 'kml_path' in locals() and os.path.exists(kml_path):
-                os.remove(kml_path)
-        except Exception:
-            pass
+            status.text("35% — Inisialisasi Earth Engine...")
+            progress_bar.progress(35)
+            init_ee_from_st_secrets()
+            status.text("40% — Earth Engine siap.")
+            progress_bar.progress(40)
+        except Exception as e:
+            st.error(f"Gagal inisialisasi EE: {e}")
+            return
+
+        # request best image
+        try:
+            status.text("45% — Mencari koleksi imagery terbaik untuk area...")
+            progress_bar.progress(45)
+            region_geojson = mapping(boundary)  # shapely -> geojson mapping
+            img, coll_used = get_best_image_for_region(region_geojson, DESIRED_SCALE)
+            status.text(f"50% — Koleksi terpilih: {coll_used}")
+            progress_bar.progress(50)
+        except Exception as e:
+            st.error(f"Gagal pilih imagery: {e}")
+            return
+
+        # request download
+        try:
+            status.text("55% — Membuat dan mengunduh GeoTIFF dari GEE (ini bisa lama)...")
+            progress_bar.progress(55)
+            out_tif = tempfile.NamedTemporaryFile(delete=False, suffix=".tif").name
+            # attempt scale param DESIRED_SCALE; note: some collections ignore very small scale
+            download_region = region_geojson
+            download_image_to_geotiff(img, download_region, DESIRED_SCALE, out_tif)
+            status.text("65% — GeoTIFF diunduh.")
+            progress_bar.progress(65)
+        except Exception as e:
+            st.error(f"Gagal unduh GeoTIFF: {e}")
+            return
+
+        # image processing
+        try:
+            def progress_cb(pct, txt):
+                if pct < 100:
+                    status.text(f"{pct}% — {txt}")
+                    progress_bar.progress(pct)
+            status.text("70% — Memulai deteksi (OpenCV)...")
+            progress_bar.progress(70)
+            buildings, roads = detect_buildings_and_roads_from_geotiff(out_tif, boundary, progress_callback=progress_cb)
+            status.text("88% — Deteksi selesai.")
+            progress_bar.progress(88)
+            st.write("Jumlah bangunan terdeteksi:", len(buildings))
+            st.write("Jumlah segmen jalan terdeteksi:", len(roads))
+        except Exception as e:
+            st.error(f"Gagal proses citra: {e}")
+            return
+
+        # export DXF
+        try:
+            status.text("92% — Membuat DXF...")
+            progress_bar.progress(92)
+            out_dxf = tempfile.NamedTemporaryFile(delete=False, suffix=".dxf").name
+            export_to_dxf_single_layer(boundary, buildings, roads, out_dxf)
+            status.text("100% — Selesai. DXF siap diunduh.")
+            progress_bar.progress(100)
+            st.success("DXF siap.")
+            with open(out_dxf, "rb") as f:
+                st.download_button("⬇️ Download DXF", f, file_name="map_sat_rect_dflt.dxf")
+        except Exception as e:
+            st.error(f"Gagal ekspor DXF: {e}")
+            return
+        finally:
+            # cleanup temp files (optional keep for debugging)
+            try:
+                if os.path.exists(tmp_kmz): os.remove(tmp_kmz)
+            except Exception: pass
+            try:
+                if os.path.exists(kml_path): os.remove(kml_path)
+            except Exception: pass
 
 if __name__ == "__main__":
     run_app()
