@@ -10,4 +10,4 @@ pillow
 requests
 pyproj
 rasterio
-ultralytics
+ultralytics>=8.0.20
