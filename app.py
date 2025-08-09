@@ -3,9 +3,11 @@ import os
 import zipfile
 import tempfile
 import json
+import time
 import datetime
 import requests
 import streamlit as st
+import geopandas as gpd
 import ezdxf
 import ee
 from xml.etree import ElementTree as ET
@@ -16,19 +18,18 @@ import numpy as np
 import cv2
 import rasterio
 from rasterio import transform as rio_transform
-from ultralytics import YOLO
 
-st.set_page_config(page_title="KMZ → DXF (Satellite + YOLOv8 Building Detection)", layout="wide")
+st.set_page_config(page_title="KMZ → DXF (Satellite + Rectangle Detection)", layout="wide")
 
-# Config
-TARGET_EPSG = "EPSG:32760"  # ganti sesuai kebutuhan
-DESIRED_SCALE = 0.5  # meters per pixel
+# ---------- Config ----------
+TARGET_EPSG = "EPSG:32760"    # target reprojection for DXF (UTM zone 60S). ganti jika perlu
+DESIRED_SCALE = 0.5           # meters per pixel target (attempt)
 PREFERRED_COLLECTIONS = [
-    "USDA/NAIP/DOQQ",
-    "COPERNICUS/S2_SR"
+    "USDA/NAIP/DOQQ",   # NAIP (US only, ~1m)
+    "COPERNICUS/S2_SR"  # Sentinel-2 surface reflectance (~10m)
 ]
 
-# --- Helpers KMZ / KML ---
+# ---------- Helpers: KMZ / KML ----------
 def extract_first_kml_from_kmz(kmz_path):
     with zipfile.ZipFile(kmz_path, 'r') as zf:
         for name in zf.namelist():
@@ -76,6 +77,7 @@ def find_boundary_polygons_from_kml(kml_path, folder_name="BOUNDARY CLUSTER"):
                             polygons.append(poly)
                     except Exception:
                         continue
+    # fallback: all coords in file
     if not polygons:
         for coords_elem in root.findall(".//kml:coordinates", ns):
             coords = parse_coordinates_text(coords_elem.text)
@@ -97,12 +99,13 @@ def find_boundary_polygons_from_kml(kml_path, folder_name="BOUNDARY CLUSTER"):
         raise RuntimeError("Hasil union polygon kosong.")
     if isinstance(merged, (Polygon, MultiPolygon)):
         return merged
+    # filter polygon parts
     poly_parts = [g for g in merged.geoms if isinstance(g, Polygon)]
     if not poly_parts:
         raise RuntimeError("Parsing KML tidak menghasilkan polygon valid.")
     return unary_union(poly_parts)
 
-# --- Earth Engine init ---
+# ---------- Initialize Earth Engine ----------
 def init_ee_from_st_secrets():
     if "gee_service_account" not in st.secrets:
         raise RuntimeError("st.secrets tidak berisi 'gee_service_account'. Masukkan service account JSON.")
@@ -122,14 +125,23 @@ def init_ee_from_st_secrets():
     except Exception:
         pass
 
-# --- Get best image from GEE ---
+# ---------- Imagery: select best available collection (fixed date handling) ----------
 def get_best_image_for_region(region_geojson, start_date_str, end_date_str, desired_scale=DESIRED_SCALE):
+    """
+    Try preferred collections; return ee.Image clipped to region if available.
+    Uses the provided date range strings 'YYYY-MM-DD'.
+    """
     if not start_date_str or not end_date_str:
         raise RuntimeError("start_date or end_date kosong.")
 
-    ee_start = ee.Date(start_date_str)
-    ee_end = ee.Date(end_date_str)
+    # Build ee.Date objects
+    try:
+        ee_start = ee.Date(start_date_str)
+        ee_end = ee.Date(end_date_str)
+    except Exception as e:
+        raise RuntimeError(f"Format tanggal tidak valid untuk GEE: {e}")
 
+    # Try each candidate
     for coll_id in PREFERRED_COLLECTIONS:
         try:
             coll = ee.ImageCollection(coll_id).filterBounds(ee.Geometry(region_geojson)).filterDate(ee_start, ee_end)
@@ -141,6 +153,7 @@ def get_best_image_for_region(region_geojson, start_date_str, end_date_str, desi
         except Exception:
             continue
 
+    # Fallback: try Sentinel-2 global (COPERNICUS/S2)
     try:
         coll = ee.ImageCollection("COPERNICUS/S2").filterBounds(ee.Geometry(region_geojson)).filterDate(ee_start, ee_end)
         if coll.size().getInfo() > 0:
@@ -152,25 +165,33 @@ def get_best_image_for_region(region_geojson, start_date_str, end_date_str, desi
 
     raise RuntimeError("Tidak ada koleksi imagery tersedia di area ini untuk rentang tanggal yang diberikan.")
 
-# --- Download GeoTIFF ---
-def download_image_to_geotiff(ee_image, region_geojson, scale, out_path):
+# ---------- Download GeoTIFF from ee.Image ----------
+def download_image_to_geotiff(ee_image, region_geojson, scale, out_path, max_pixels=1e9):
     params = {
         'scale': float(scale),
         'region': json.dumps(region_geojson),
         'format': 'GEO_TIFF',
         'crs': 'EPSG:4326'
     }
-    url = ee_image.getDownloadURL(params)
-    r = requests.get(url, stream=True, timeout=1200)
-    r.raise_for_status()
-    with open(out_path, 'wb') as f:
-        for chunk in r.iter_content(chunk_size=8192):
-            if chunk:
-                f.write(chunk)
+    try:
+        url = ee_image.getDownloadURL(params)
+    except Exception as e:
+        raise RuntimeError(f"Gagal membuat download URL dari EE: {e}")
+
+    try:
+        r = requests.get(url, stream=True, timeout=1200)
+        r.raise_for_status()
+        with open(out_path, 'wb') as f:
+            for chunk in r.iter_content(chunk_size=8192):
+                if chunk:
+                    f.write(chunk)
+    except Exception as e:
+        raise RuntimeError(f"Gagal mengunduh GeoTIFF dari URL: {e}")
+
     return out_path
 
-# --- Detect buildings (YOLOv8) and roads ---
-def detect_buildings_and_roads_from_geotiff(geotiff_path, boundary_shapely, model, progress_callback=None):
+# ---------- Image processing: detect buildings (rectangles) & roads (lines) ----------
+def detect_buildings_and_roads_from_geotiff(geotiff_path, boundary_shapely, progress_callback=None):
     buildings = []
     roads = []
 
@@ -179,64 +200,71 @@ def detect_buildings_and_roads_from_geotiff(geotiff_path, boundary_shapely, mode
         transform = src.transform
 
         if bands >= 3:
-            arr = src.read([1,2,3])
+            arr = src.read([1,2,3])  # (3, H, W)
         else:
             arr = src.read(1)[None,:,:]
 
+        # prepare image for OpenCV
         if arr.shape[0] >= 3:
             img = np.dstack([arr[0], arr[1], arr[2]])
             if img.dtype != np.uint8:
                 img = ((img - img.min()) / (img.max() - img.min()) * 255).astype(np.uint8)
-            img_bgr = cv2.cvtColor(img, cv2.COLOR_RGB2BGR)
+            gray = cv2.cvtColor(img, cv2.COLOR_RGB2GRAY)
         else:
             gray = arr[0]
             if gray.dtype != np.uint8:
                 gray = ((gray - gray.min()) / (gray.max() - gray.min()) * 255).astype(np.uint8)
-            img_bgr = cv2.cvtColor(gray, cv2.COLOR_GRAY2BGR)
 
-    if progress_callback:
-        progress_callback(60, "Menjalankan YOLOv8 untuk deteksi bangunan...")
+        # denoise & threshold
+        gray = cv2.GaussianBlur(gray, (3,3), 0)
+        _, th = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+        if np.mean(th == 255) > 0.6:
+            th = 255 - th
 
-    results = model.predict(source=img_bgr, conf=0.3, verbose=False)
+        kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (5,5))
+        th = cv2.morphologyEx(th, cv2.MORPH_CLOSE, kernel, iterations=2)
+        th = cv2.morphologyEx(th, cv2.MORPH_OPEN, kernel, iterations=1)
 
-    boxes = results[0].boxes.xyxy.cpu().numpy()
+        contours, _ = cv2.findContours(th, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
 
-    if progress_callback:
-        progress_callback(75, f"YOLOv8 deteksi {len(boxes)} bounding box.")
+        if progress_callback:
+            progress_callback(60, "Memproses kontur untuk menemukan bangunan...")
 
-    for box in boxes:
-        xmin, ymin, xmax, ymax = box
-        poly_px = [(xmin, ymin), (xmax, ymin), (xmax, ymax), (xmin, ymax)]
+        for cnt in contours:
+            area = cv2.contourArea(cnt)
+            if area < 50:
+                continue
+            epsilon = 0.02 * cv2.arcLength(cnt, True)
+            approx = cv2.approxPolyDP(cnt, epsilon, True)
+            if len(approx) >= 4 and len(approx) <= 12:
+                poly_px = [(int(pt[0][0]), int(pt[0][1])) for pt in approx]
+                lonlat_poly = []
+                for px, py in poly_px:
+                    x, y = rio_transform.xy(transform, py, px)
+                    lonlat_poly.append((x, y))
+                centroid = Point(np.mean([p[0] for p in lonlat_poly]), np.mean([p[1] for p in lonlat_poly]))
+                if not centroid.within(boundary_shapely):
+                    continue
+                buildings.append(Polygon(lonlat_poly))
 
-        lonlat_poly = []
-        for px, py in poly_px:
-            x, y = rio_transform.xy(transform, int(py), int(px))
-            lonlat_poly.append((x, y))
-
-        poly = Polygon(lonlat_poly)
-        if poly.centroid.within(boundary_shapely):
-            buildings.append(poly)
-
-    if progress_callback:
-        progress_callback(80, "Mendeteksi jalan...")
-
-    gray = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2GRAY)
-    edges = cv2.Canny(gray, 50, 150, apertureSize=3)
-    edges = cv2.dilate(edges, cv2.getStructuringElement(cv2.MORPH_RECT, (3,3)), iterations=1)
-    lines = cv2.HoughLinesP(edges, rho=1, theta=np.pi/180, threshold=80, minLineLength=30, maxLineGap=10)
-    if lines is not None:
-        for l in lines:
-            x1,y1,x2,y2 = l[0]
-            lon1, lat1 = rio_transform.xy(transform, y1, x1)
-            lon2, lat2 = rio_transform.xy(transform, y2, x2)
-            line = LineString([(lon1, lat1), (lon2, lat2)])
-            if line.intersects(boundary_shapely):
-                roads.append(line)
+        if progress_callback:
+            progress_callback(75, "Mendeteksi tepi untuk jalan...")
+        edges = cv2.Canny(gray, 50, 150, apertureSize=3)
+        edges = cv2.dilate(edges, cv2.getStructuringElement(cv2.MORPH_RECT, (3,3)), iterations=1)
+        lines = cv2.HoughLinesP(edges, rho=1, theta=np.pi/180, threshold=80, minLineLength=30, maxLineGap=10)
+        if lines is not None:
+            for l in lines:
+                x1,y1,x2,y2 = l[0]
+                lon1, lat1 = rio_transform.xy(transform, y1, x1)
+                lon2, lat2 = rio_transform.xy(transform, y2, x2)
+                line = LineString([(lon1, lat1), (lon2, lat2)])
+                if line.intersects(boundary_shapely):
+                    roads.append(line)
 
     return buildings, roads
 
-# --- Export ke DXF dengan layer terpisah ---
-def export_to_dxf(boundary_shapely, buildings_list, roads_list, out_path):
+# ---------- Convert to DXF ----------
+def export_to_dxf_single_layer(boundary_shapely, buildings_list, roads_list, out_path):
     doc = ezdxf.new()
     msp = doc.modelspace()
     transformer = Transformer.from_crs("epsg:4326", TARGET_EPSG, always_xy=True)
@@ -263,39 +291,36 @@ def export_to_dxf(boundary_shapely, buildings_list, roads_list, out_path):
             out.append((x - min_x, y - min_y))
         return out
 
-    # Boundary di layer "BOUNDARY"
+    layer_name = "MAP"
     for p in bpolys:
         coords = to_utm_and_offset(list(p.exterior.coords))
-        msp.add_lwpolyline(coords, dxfattribs={"layer": "BOUNDARY"})
+        msp.add_lwpolyline(coords, dxfattribs={"layer": layer_name})
 
-    # Bangunan di layer "BANGUNAN"
     for poly in buildings_list:
         try:
             coords = to_utm_and_offset(list(poly.exterior.coords))
-            msp.add_lwpolyline(coords, dxfattribs={"layer": "BANGUNAN"})
+            msp.add_lwpolyline(coords, dxfattribs={"layer": layer_name})
         except Exception:
             continue
 
-    # Jalan di layer "JALAN"
     for line in roads_list:
         try:
             coords = to_utm_and_offset(list(line.coords))
-            msp.add_lwpolyline(coords, dxfattribs={"layer": "JALAN"})
+            msp.add_lwpolyline(coords, dxfattribs={"layer": layer_name})
         except Exception:
             continue
 
     doc.set_modelspace_vport(height=10000)
     doc.saveas(out_path)
 
-# --- Main Streamlit app ---
+# ---------- Streamlit App ----------
 def run_app():
-    st.title("KMZ → DXF (Satellite + YOLOv8 Building Detection)")
+    st.title("KMZ → DXF (Satellite + Rectangle Detection)")
     st.markdown("""
-    Upload file KMZ boundary.
-    App akan mengambil citra resolusi tinggi dari GEE, menjalankan YOLOv8 untuk deteksi bangunan,
-    dan mendeteksi jalan menggunakan OpenCV, lalu export ke DXF dengan layer terpisah.
+    Upload KMZ boundary. App akan mencoba mengambil citra resolusi tinggi (attempt 0.5 m/pix),
+    lalu mendeteksi kotak bangunan (approxPolyDP) dan jalan (Canny+Hough), lalu export DXF (single layer).
     """)
-    st.info("Pastikan `st.secrets['gee_service_account']` sudah berisi service account JSON Earth Engine.")
+    st.info("Pastikan `st.secrets['gee_service_account']` sudah berisi service account JSON untuk Earth Engine.")
 
     uploaded = st.file_uploader("Upload file .kmz", type=["kmz"])
     st.write("Pilih rentang tanggal citra (GEE):")
@@ -305,127 +330,118 @@ def run_app():
     end_date_input = st.date_input("Tanggal akhir", value=today)
     run_button = st.button("Mulai proses (ambil citra & deteksi)")
 
+    # progress UI
     progress_bar = st.progress(0)
     status = st.empty()
 
     if not uploaded:
         return
 
-    # Load YOLO model sekali ketika tombol ditekan
-    model = None
-
     if run_button:
-        # Validasi tanggal
+        # basic validation dates
         if start_date_input > end_date_input:
             st.error("Tanggal mulai harus lebih awal dari tanggal akhir.")
             return
 
-        try:
-            status.text("10% — Load model YOLOv8...")
-            progress_bar.progress(10)
-            model_path = "yolov8s.pt"
-            if not os.path.exists(model_path):
-                st.error(f"Model YOLO tidak ditemukan: {model_path}")
-                return
-            model = YOLO(model_path)
-            status.text("20% — Model YOLOv8 siap.")
-            progress_bar.progress(20)
-        except Exception as e:
-            st.error(f"Gagal load model YOLOv8: {e}")
-            return
+        tmp_kmz = tempfile.NamedTemporaryFile(delete=False, suffix=".kmz").name
+        with open(tmp_kmz, "wb") as f:
+            f.write(uploaded.read())
+        status.text("10% — Ekstrak KML dari KMZ...")
+        progress_bar.progress(10)
 
         try:
-            tmp_kmz = tempfile.NamedTemporaryFile(delete=False, suffix=".kmz").name
-            with open(tmp_kmz, "wb") as f:
-                f.write(uploaded.read())
-            status.text("25% — Ekstrak KML dari KMZ...")
-            progress_bar.progress(25)
             kml_path, inner_name = extract_first_kml_from_kmz(tmp_kmz)
-            status.text(f"30% — Menggunakan internal KML: {inner_name}")
-            progress_bar.progress(30)
+            status.text(f"15% — Menggunakan internal KML: {inner_name}")
+            progress_bar.progress(15)
         except Exception as e:
             st.error(f"Gagal ekstrak KML: {e}")
             return
 
         try:
-            status.text("35% — Cari polygon boundary di KML...")
-            progress_bar.progress(35)
+            status.text("20% — Mencari polygon boundary di KML...")
+            progress_bar.progress(20)
             boundary = find_boundary_polygons_from_kml(kml_path, folder_name="BOUNDARY CLUSTER")
-            status.text("45% — Boundary ditemukan.")
-            progress_bar.progress(45)
+            status.text("30% — Boundary ditemukan.")
+            progress_bar.progress(30)
             st.write("Boundary bbox (lon/lat):", boundary.bounds)
         except Exception as e:
             st.error(f"Gagal parsing boundary: {e}")
             return
 
+        # init EE
         try:
-            status.text("50% — Inisialisasi Earth Engine...")
-            progress_bar.progress(50)
+            status.text("35% — Inisialisasi Earth Engine...")
+            progress_bar.progress(35)
             init_ee_from_st_secrets()
-            status.text("55% — Earth Engine siap.")
-            progress_bar.progress(55)
+            status.text("40% — Earth Engine siap.")
+            progress_bar.progress(40)
         except Exception as e:
             st.error(f"Gagal inisialisasi EE: {e}")
             return
 
+        # request best image (with correct date strings)
         try:
-            status.text("60% — Cari koleksi imagery terbaik...")
-            progress_bar.progress(60)
+            status.text("45% — Mencari koleksi imagery terbaik untuk area...")
+            progress_bar.progress(45)
             region_geojson = mapping(boundary)
             start_str = start_date_input.isoformat()
             end_str = end_date_input.isoformat()
             img, coll_used = get_best_image_for_region(region_geojson, start_str, end_str, DESIRED_SCALE)
-            status.text(f"65% — Koleksi terpilih: {coll_used}")
-            progress_bar.progress(65)
+            status.text(f"50% — Koleksi terpilih: {coll_used}")
+            progress_bar.progress(50)
         except Exception as e:
             st.error(f"Gagal pilih imagery: {e}")
             return
 
+        # request download
         try:
-            status.text("70% — Download GeoTIFF dari GEE (bisa lama)...")
-            progress_bar.progress(70)
+            status.text("55% — Membuat dan mengunduh GeoTIFF dari GEE (ini bisa lama)...")
+            progress_bar.progress(55)
             out_tif = tempfile.NamedTemporaryFile(delete=False, suffix=".tif").name
             download_image_to_geotiff(img, mapping(boundary), DESIRED_SCALE, out_tif)
-            status.text("75% — GeoTIFF diunduh.")
-            progress_bar.progress(75)
+            status.text("65% — GeoTIFF diunduh.")
+            progress_bar.progress(65)
         except Exception as e:
             st.error(f"Gagal unduh GeoTIFF: {e}")
             return
 
+        # image processing
         try:
             def progress_cb(pct, txt):
                 if pct < 100:
                     status.text(f"{pct}% — {txt}")
                     progress_bar.progress(pct)
-            status.text("80% — Jalankan deteksi bangunan dan jalan...")
-            progress_bar.progress(80)
-            buildings, roads = detect_buildings_and_roads_from_geotiff(out_tif, boundary, model, progress_callback=progress_cb)
-            status.text("95% — Deteksi selesai.")
-            progress_bar.progress(95)
+            status.text("70% — Memulai deteksi (OpenCV)...")
+            progress_bar.progress(70)
+            buildings, roads = detect_buildings_and_roads_from_geotiff(out_tif, boundary, progress_callback=progress_cb)
+            status.text("88% — Deteksi selesai.")
+            progress_bar.progress(88)
             st.write("Jumlah bangunan terdeteksi:", len(buildings))
             st.write("Jumlah segmen jalan terdeteksi:", len(roads))
         except Exception as e:
             st.error(f"Gagal proses citra: {e}")
             return
 
+        # export DXF
         try:
-            status.text("98% — Buat file DXF...")
-            progress_bar.progress(98)
+            status.text("92% — Membuat DXF...")
+            progress_bar.progress(92)
             out_dxf = tempfile.NamedTemporaryFile(delete=False, suffix=".dxf").name
-            export_to_dxf(boundary, buildings, roads, out_dxf)
+            export_to_dxf_single_layer(boundary, buildings, roads, out_dxf)
             status.text("100% — Selesai. DXF siap diunduh.")
             progress_bar.progress(100)
             st.success("DXF siap.")
             with open(out_dxf, "rb") as f:
-                st.download_button("⬇️ Download DXF", f, file_name="map_sat_yolov8.dxf")
+                st.download_button("⬇️ Download DXF", f, file_name="map_sat_rect_dflt.dxf")
         except Exception as e:
             st.error(f"Gagal ekspor DXF: {e}")
             return
         finally:
-            # Hapus tmp files
-            try: os.remove(tmp_kmz)
+            try:
+                if os.path.exists(tmp_kmz): os.remove(tmp_kmz)
             except Exception: pass
-            try: os.remove(kml_path)
+            try:
+                if os.path.exists(kml_path): os.remove(kml_path)
             except Exception: pass
 
 if __name__ == "__main__":
