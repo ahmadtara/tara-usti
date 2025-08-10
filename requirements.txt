@@ -1,3 +1,6 @@
 streamlit
+pygame
 numpy
 Pillow
+gspread
+oauth2client
