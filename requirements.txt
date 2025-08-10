@@ -1,13 +1,3 @@
-
-ultralytics
+streamlit
 numpy
-opencv-python-headless
 Pillow
-scikit-image
-shapely
-geopandas
-fastkml
-rasterio
-pyproj
-ezdxf
-networkx
