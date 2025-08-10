@@ -1,1 +1,230 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<title>Zuma — by.Tara (HD)</title>
+<style>
+  :root{ --bg1:#061022; --accent:#ffd166; }
+  html,body{height:100%;margin:0;background:linear-gradient(180deg,var(--bg1),#031026);font-family:Inter,Arial,sans-serif;color:#fff}
+  .wrap{display:flex;flex-direction:column;align-items:center;padding:10px;gap:8px}
+  .top{width:100%;max-width:900px;display:flex;justify-content:space-between;align-items:center}
+  .canvas-wrap{position:relative;width:100%;max-width:900px;height:860px}
+  canvas{width:100%;height:100%;border-radius:18px;box-shadow:0 20px 60px rgba(0,0,0,0.6);background:#071428;display:block}
+  .brand{position:absolute;left:50%;transform:translateX(-50%);bottom:14px;background:rgba(0,0,0,0.28);padding:8px 14px;border-radius:999px;font-weight:700}
+  .hud{position:absolute;left:18px;top:12px;display:flex;gap:12px;align-items:center;font-weight:700}
+  .btns{position:absolute;right:18px;top:12px}
+  .note{max-width:900px;color:#cbd5e1;font-size:13px;display:flex;justify-content:space-between}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="top"><div style="font-weight:900;font-size:20px">Zuma</div><div style="opacity:0.85">by.Tara — HD</div></div>
+  <div class="canvas-wrap" id="wrap">
+    <canvas id="game" width="1280" height="800"></canvas>
+    <div class="hud"><div id="score">Score: 0</div><div id="level" style="margin-left:8px">Level:1</div></div>
+    <div class="btns"><button id="reset" style="background:var(--accent);border:0;padding:8px 12px;border-radius:10px;font-weight:700">Reset</button></div>
+    <div class="brand">by.Tara</div>
+  </div>
+  <div class="note"><div>Tap to shoot • Drag to aim</div><div>Best view: Add to Home Screen (Android)</div></div>
+</div>
 
+<script>
+// HD-friendly Zuma-like canvas script
+(() => {
+  const canvas = document.getElementById('game');
+  // use high internal resolution for HD clarity
+  const DPR = Math.min(window.devicePixelRatio || 1, 2); // cap DPR to 2 for performance
+  canvas.width = 1280 * DPR;
+  canvas.height = 800 * DPR;
+  canvas.style.width = '100%';
+  canvas.style.height = '100%';
+  const ctx = canvas.getContext('2d');
+  ctx.scale(DPR, DPR);
+
+  const scoreEl = document.getElementById('score');
+  const levelEl = document.getElementById('level');
+  const resetBtn = document.getElementById('reset');
+  const wrap = document.getElementById('wrap');
+
+  // preload HD assets (bundled in /assets/images)
+  const ASSET_PATH = './assets/images/';
+  const BALL_COUNT = 5;
+  const ballImgs = [];
+  for (let i=1;i<=BALL_COUNT;i++){
+    const img = new Image();
+    img.src = ASSET_PATH + 'ball_' + i + '.png';
+    ballImgs.push(img);
+  }
+  const bg = new Image();
+  bg.src = './assets/images/background_hd.png';
+
+  // WebAudio simple functions
+  const AudioCtx = window.AudioContext || window.webkitAudioContext;
+  let audioCtx = null;
+  function ensureAudio(){ if(!audioCtx) audioCtx = new AudioCtx(); return audioCtx; }
+  function playShort(freq, type='sine', dur=0.18){
+    try{
+      const c = ensureAudio();
+      const o = c.createOscillator(); const g = c.createGain();
+      o.type = type; o.frequency.value = freq; g.gain.setValueAtTime(0.0001, c.currentTime);
+      g.gain.exponentialRampToValueAtTime(0.12, c.currentTime + 0.01);
+      g.gain.exponentialRampToValueAtTime(0.001, c.currentTime + dur);
+      o.connect(g); g.connect(c.destination); o.start(); o.stop(c.currentTime + dur);
+    }catch(e){}
+  }
+
+  // Game variables (similar to previous but using images to draw balls)
+  const colors = ['red','yellow','green','blue','purple']; // used only for logic
+  const center = {x: 640, y: 400};
+  const pathRadius = 300;
+  const ballR = 28;
+  const baseSpeed = 0.018;
+  let chain = [], score=0, level=1, shooter={angle:-Math.PI/2, next:0}, fired=null, particles=[], trails=[];
+  let lastTime = 0, spawnCounter = 0, gameOver=false;
+
+  const levelCfg = (lv) => ({speed: baseSpeed + (lv-1)*0.004, spawnInterval: Math.max(380,900-(lv-1)*80), target: 60*lv});
+
+  function randIdx(){ return Math.floor(Math.random()*BALL_COUNT); }
+  function posFromT(t){ const maxTurns = 2.2; const theta = Math.PI*2*maxTurns*(t) + Math.PI/2; const r = pathRadius * t; return {x: center.x + r*Math.cos(theta), y: center.y + r*Math.sin(theta), theta}; }
+
+  function reset(){ chain=[]; score=0; level=1; shooter.angle=-Math.PI/2; shooter.next = randIdx(); fired=null; particles=[]; trails=[]; spawnCounter=0; gameOver=false;
+    for(let i=0;i<12;i++) chain.push({t:0.9 - i*0.045, idx: i % BALL_COUNT});
+    updateHUD();
+  }
+  function updateHUD(){ scoreEl.textContent = 'Score: ' + score; levelEl.textContent = 'Level: ' + level; }
+
+  function spawnPop(x,y,idx,count=18){ for(let i=0;i<count;i++){ const a=Math.random()*Math.PI*2; const s=1+Math.random()*3; particles.push({x,y,vx:Math.cos(a)*s*(1+Math.random()), vy:Math.sin(a)*s*(1+Math.random()), life:600+Math.random()*300, age:0, idx}); } playShort(1200,'triangle',0.14); }
+
+  function update(dt){
+    if(gameOver) return;
+    const cfg = levelCfg(level);
+    for(let b of chain){ b.t -= cfg.speed * dt; if(b.t <= 0.06) gameOver = true; }
+    spawnCounter += dt * 16.666;
+    if(spawnCounter > cfg.spawnInterval / 16.666){ spawnCounter = 0; const lastT = chain.length ? chain[chain.length-1].t : 0.98; chain.push({t: lastT + 0.055 + Math.random()*0.03, idx: randIdx()}); }
+    if(fired){ fired.x += fired.vx * dt; fired.y += fired.vy * dt; trails.push({x:fired.x,y:fired.y,alpha:0.9,life:120}); }
+    for(let p of particles){ p.age += dt*16.666; p.x += p.vx * dt * 0.9; p.y += p.vy * dt * 0.9; p.vx *= 0.995; p.vy *= 0.995; }
+    for(let i=particles.length-1;i>=0;i--){ if(particles[i].age > particles[i].life) particles.splice(i,1); }
+    for(let i=trails.length-1;i>=0;i--){ trails[i].life -= dt*16.666; trails[i].alpha -= 0.02*dt; if(trails[i].life <=0 || trails[i].alpha <= 0) trails.splice(i,1); }
+    if(fired) handleCollision();
+    if(score >= levelCfg(level).target){ level++; updateHUD(); for(let i=0;i<4;i++){ const last = chain.length ? chain[chain.length-1].t : 0.9; chain.push({t: last + 0.045*(i+1), idx: randIdx()}); } playShort(640,'sine',0.38); }
+  }
+
+  function handleCollision(){
+    if(!fired) return;
+    for(let i=0;i<chain.length;i++){
+      const b=chain[i]; const p=posFromT(Math.max(0.03,b.t)); const dx=fired.x - p.x; const dy=fired.y - p.y; const d=Math.sqrt(dx*dx + dy*dy);
+      if(d <= (ballR*1.8)){
+        const insertIndex = i; const insertT = Math.min(b.t + 0.02, 0.98);
+        chain.splice(insertIndex,0,{t: insertT, idx: fired.idx}); fired = null; runRemoval(insertIndex); return;
+      }
+    }
+    if(fired.x < -100 || fired.x > canvas.width+100 || fired.y < -100 || fired.y > canvas.height+100) fired = null;
+  }
+
+  function runRemoval(idx){
+    const colorIdx = chain[idx].idx; let left=idx, right=idx;
+    while(left-1>=0 && chain[left-1].idx === colorIdx) left--; while(right+1<chain.length && chain[right+1].idx===colorIdx) right++;
+    const cnt = right-left+1;
+    if(cnt >= 3){
+      let avgX=0, avgY=0;
+      for(let k=left;k<=right;k++){ const p=posFromT(chain[k].t); avgX+=p.x; avgY+=p.y; }
+      avgX /= cnt; avgY /= cnt;
+      spawnPop(avgX, avgY, colorIdx, Math.min(36, 8 + cnt*5));
+      score += cnt * 12; updateHUD(); chain.splice(left, cnt);
+      if(cnt >= 5){ const mid = Math.max(0, Math.min(chain.length-1, left)); chain.splice(mid, 0, {t: 0.5 + Math.random()*0.3, idx: randIdx()}); }
+    }
+  }
+
+  // draw with images for HD clarity
+  function draw(){
+    // draw background image full HD scaled to canvas
+    if(bg.complete) ctx.drawImage(bg, 0, 0, canvas.width/DPR, canvas.height/DPR);
+    // path
+    ctx.lineWidth = 1.2; ctx.strokeStyle = 'rgba(255,255,255,0.03)'; ctx.beginPath();
+    for(let t=0;t<=1.001;t+=0.003){ const p=posFromT(t); if(t===0) ctx.moveTo(p.x,p.y); else ctx.lineTo(p.x,p.y); } ctx.stroke();
+    // chain (draw from outer to inner)
+    for(let i=chain.length-1;i>=0;i--){
+      const b = chain[i]; const p = posFromT(Math.max(0.03,b.t));
+      const scale = 1 + (0.9 - Math.max(0.03,b.t))*0.12;
+      const img = ballImgs[b.idx];
+      if(img && img.complete){
+        const sx = img.width, sy = img.height;
+        const drawR = ballR * scale * (DPR>1?1.2:1);
+        ctx.drawImage(img, p.x - drawR, p.y - drawR, drawR*2, drawR*2);
+      } else {
+        // fallback: simple circle
+        ctx.beginPath(); ctx.fillStyle = '#888'; ctx.arc(p.x,p.y, ballR*scale,0,Math.PI*2); ctx.fill();
+      }
+    }
+    if(fired){
+      const img = ballImgs[fired.idx];
+      if(img && img.complete) ctx.drawImage(img, fired.x - ballR, fired.y - ballR, ballR*2, ballR*2);
+      else { ctx.beginPath(); ctx.fillStyle='#fff'; ctx.arc(fired.x,fired.y,ballR,0,Math.PI*2); ctx.fill(); }
+    }
+    // particles & trails
+    for(let p of particles){ const lifeRatio = 1 - p.age / p.life; ctx.beginPath(); ctx.globalAlpha = Math.max(0, lifeRatio); ctx.fillStyle = ballImgs[p.idx] ? 'rgba(255,255,255,0.9)' : 'rgba(255,255,255,0.6)'; ctx.arc(p.x,p.y, 3 + (1-lifeRatio)*6, 0, Math.PI*2); ctx.fill(); ctx.globalAlpha = 1; }
+    for(let tr of trails){ ctx.beginPath(); ctx.globalAlpha = tr.alpha; ctx.fillStyle = 'rgba(255,255,255,0.06)'; ctx.arc(tr.x,tr.y,3,0,Math.PI*2); ctx.fill(); ctx.globalAlpha = 1; }
+    // center hole
+    ctx.beginPath(); ctx.fillStyle = 'rgba(2,6,10,0.98)'; ctx.arc(center.x, center.y, 34, 0, Math.PI*2); ctx.fill();
+    ctx.lineWidth = 2; ctx.strokeStyle = 'rgba(255,255,255,0.04)'; ctx.stroke();
+  }
+
+  // input handling (pointer)
+  let dragging=false, lastDown={x:0,y:0};
+  function rotateTo(clientX, clientY){
+    const rect = canvas.getBoundingClientRect();
+    const cx = rect.left + center.x * (rect.width/(canvas.width/DPR));
+    const cy = rect.top + center.y * (rect.height/(canvas.height/DPR));
+    const dx = clientX - cx; const dy = clientY - cy; shooter.angle = Math.atan2(dy, dx) + Math.PI/2;
+  }
+  canvas.addEventListener('pointerdown', (e)=>{ dragging=true; lastDown.x=e.clientX; lastDown.y=e.clientY; rotateTo(e.clientX, e.clientY); try{ ensureAudio(); }catch(e){} });
+  window.addEventListener('pointermove', (e)=>{ if(!dragging) return; rotateTo(e.clientX, e.clientY); });
+  window.addEventListener('pointerup', (e)=>{ if(!dragging) return; const dx=e.clientX - lastDown.x; const dy=e.clientY - lastDown.y; if(Math.sqrt(dx*dx+dy*dy) < 12) shoot(); dragging=false; });
+  canvas.addEventListener('click', (e)=>{ rotateTo(e.clientX, e.clientY); shoot(); try{ ensureAudio(); }catch(e){} });
+
+  function shoot(){
+    if(gameOver) return; if(fired) return;
+    const speed = 14;
+    const startX = center.x + Math.cos(shooter.angle) * -90;
+    const startY = center.y + Math.sin(shooter.angle) * -90;
+    const vx = Math.cos(shooter.angle) * -speed; const vy = Math.sin(shooter.angle) * -speed;
+    fired = {x: startX, y: startY, vx, vy, idx: shooter.next};
+    shooter.next = randIdx();
+    playShort(820,'sine',0.18);
+  }
+
+  resetBtn.addEventListener('click', ()=>{ reset(); });
+
+  // main loop with delta-time based updates for smoothness
+  function loop(ts){
+    if(!lastTime) lastTime = ts; const dt = (ts - lastTime) / 16.666; lastTime = ts;
+    update(dt); draw();
+    // HUD next ball preview
+    ctx.save(); ctx.resetTransform(); ctx.font='14px Inter,Arial'; ctx.fillStyle='rgba(255,255,255,0.95)'; ctx.textAlign='left'; ctx.fillText('Next:', 18, 28);
+    const img = ballImgs[shooter.next]; if(img && img.complete) ctx.drawImage(img, 64, 8, 40, 40);
+    ctx.restore();
+    if(!gameOver) requestAnimationFrame(loop); else {
+      ctx.fillStyle='rgba(0,0,0,0.6)'; ctx.fillRect(40, canvas.height/DPR/2 - 60, canvas.width/DPR - 80, 120);
+      ctx.fillStyle='#fff'; ctx.textAlign='center'; ctx.font='28px Inter,Arial'; ctx.fillText('Game Over', canvas.width/DPR/2, canvas.height/DPR/2 - 6);
+      ctx.font='16px Inter,Arial'; ctx.fillText('Press Reset to play again', canvas.width/DPR/2, canvas.height/DPR/2 + 26);
+    }
+  }
+
+  // initialize after assets loaded
+  function initWhenReady(){
+    // ensure images are loaded or wait briefly
+    let loaded = true;
+    for(let im of ballImgs){ if(!im.complete) loaded = false; }
+    if(!bg.complete) loaded = false;
+    if(!loaded){ setTimeout(initWhenReady, 120); return; }
+    reset(); requestAnimationFrame(loop);
+  }
+  initWhenReady();
+
+  // expose for debug
+  window.__zuma_hd = { reset };
+})();
+</script>
+</body>
+</html>
