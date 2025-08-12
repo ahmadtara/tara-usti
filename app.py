@@ -111,11 +111,16 @@ if st.session_state.file_uploaded:
         y_pred_c45 = model_c45.predict(X_test)
         y_pred_c45_train = model_c45.predict(X_train)
 
+        # SMOTE untuk menyeimbangkan data training sebelum digunakan di Naive Bayes
+        sm = SMOTE(random_state=42)
+        X_train_resampled, y_train_resampled = sm.fit_resample(X_train, y_train)
+
         model_nb = GaussianNB()
-        model_nb.fit(X_train, y_train)
-        # prediksi test & train
-        y_pred_nb = model_nb.predict(X_test)
-        y_pred_nb_train = model_nb.predict(X_train)
+        model_nb.fit(X_train_resampled, y_train_resampled)
+
+# prediksi test & prediksi ulang training untuk evaluasi
+y_pred_nb = model_nb.predict(X_test)
+y_pred_nb_train = model_nb.predict(X_train)
 
     # Evaluasi metrik (gunakan zero_division=0 untuk menghindari error)
     def evaluate(y_true, y_pred):
@@ -279,3 +284,4 @@ if st.session_state.file_uploaded:
     # ----------------- TABEL -----------------
     st.markdown("<h3 style='color:#81C784;'>📄 Tabel Evaluasi Lengkap</h3>", unsafe_allow_html=True)
     st.dataframe(df_eval.style.highlight_max(axis=0, color='lightgreen'))
+
