@@ -112,6 +112,15 @@ if st.session_state.file_uploaded:
         y_pred_c45 = model_c45.predict(X_test)
         y_pred_c45_train = model_c45.predict(X_train)
 
+        # Pastikan tidak ada NaN di X_train atau y_train
+        X_train = X_train.dropna()
+        y_train = y_train[X_train.index]  # Menyinkronkan y_train dengan X_train setelah menghapus NaN
+
+        # Pastikan semua fitur numerik
+        X_train = X_train.apply(pd.to_numeric, errors='coerce')
+        X_train = X_train.dropna()  # Hapus baris yang memiliki nilai NaN setelah di-convert ke numerik
+        y_train = y_train[X_train.index]  # Menyinkronkan y_train dengan X_train setelah menghapus NaN
+
         # SMOTE untuk menyeimbangkan data training sebelum digunakan di Naive Bayes
         sm = SMOTE(random_state=42)
         X_train_resampled, y_train_resampled = sm.fit_resample(X_train, y_train)
