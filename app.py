@@ -5,119 +5,96 @@ import seaborn as sns
 from sklearn.model_selection import train_test_split
 from sklearn.tree import DecisionTreeClassifier
 from sklearn.naive_bayes import GaussianNB
+from sklearn.metrics import accuracy_score, classification_report
 
-st.set_page_config(page_title="Prediksi PO", layout="wide")
+st.title("Prediksi Status PO - My Republic 2024")
 
-st.title("📊 Prediksi Status PO")
-
-# ================== Upload file ==================
+# Upload file
 uploaded_file = st.file_uploader("Unggah file Excel", type=["xlsx"])
-if uploaded_file is not None:
-    # Baca data awal
-    df_raw = pd.read_excel(uploaded_file)
-    total_awal = len(df_raw)
 
-    # Bersihkan kolom nama
-    df = df_raw.copy()
-    df.columns = [c.strip() for c in df.columns]
+if uploaded_file is not None:
+    # Baca file
+    df_raw = pd.read_excel(uploaded_file)
+
+    # Simpan jumlah data awal
+    initial_rows = len(df_raw)
+
+    # Normalisasi nama kolom (hapus spasi, lowercase)
+    df_raw.columns = df_raw.columns.str.strip()
+
+    # Rename kolom agar sesuai format
+    rename_map = {
+        'Topology': 'topologi',
+        'Vendor': 'vendor',
+        'HP Cluster\n(SND Wajib Isi)': 'hp_cluster',
+        'Status PO Cluster (SND Wajib Isi)': 'status_po'
+    }
+    df = df_raw.rename(columns=rename_map)
 
     # Pastikan kolom target ada
-    if "status_po" not in df.columns:
-        st.error("Kolom 'status_po' tidak ditemukan di file yang diunggah.")
+    required_cols = ['topologi', 'vendor', 'hp_cluster', 'status_po']
+    missing_cols = [col for col in required_cols if col not in df.columns]
+    if missing_cols:
+        st.error(f"Kolom berikut tidak ditemukan: {missing_cols}")
+        st.write("Kolom yang tersedia:", list(df.columns))
         st.stop()
 
-    # Bersihkan kolom status_po
-    df["status_po"] = df["status_po"].astype(str).str.strip().str.title()
+    # Pilih hanya kolom yang diperlukan & drop NA
+    df = df[required_cols].dropna()
 
-    # Drop baris kosong
-    df = df.dropna()
+    # Jumlah data setelah processing
+    processed_rows = len(df)
 
-    total_setelah = len(df)
+    st.write(f"Jumlah data awal: **{initial_rows}**")
+    st.write(f"Jumlah data setelah processing: **{processed_rows}**")
 
-    st.markdown(f"**Jumlah Data Awal:** {total_awal} | **Setelah Preprocessing:** {total_setelah}")
+    # Bersihkan nilai teks
+    df['status_po'] = df['status_po'].astype(str).str.strip().str.title()
+
+    # Hitung distribusi status
+    status_counts = df['status_po'].value_counts()
+
+    # Plot distribusi
+    fig, ax = plt.subplots()
+    sns.barplot(x=status_counts.index, y=status_counts.values, ax=ax, palette="viridis")
+    ax.set_xlabel("Status PO")
+    ax.set_ylabel("Jumlah")
+    ax.set_title("Jumlah Prediksi Tercapai vs Tidak")
+    st.pyplot(fig)
 
     # One-hot encoding
     df_encoded = pd.get_dummies(df, drop_first=False)
 
-    # Cari nama kolom target yang mengandung "Tercapai"
-    target_candidates = [col for col in df_encoded.columns if "Tercapai" in col]
-    if not target_candidates:
-        st.error("Tidak ditemukan kolom target yang mengandung kata 'Tercapai' setelah encoding.")
-        st.write("Kolom yang ada:", list(df_encoded.columns))
+    target_col = 'status_po_Tercapai'
+    if target_col not in df_encoded.columns:
+        st.error(f"Kolom target '{target_col}' tidak ditemukan. Cek nilai di kolom status_po.")
+        st.write("Nilai unik:", df['status_po'].unique())
         st.stop()
 
-    target_col = target_candidates[0]  # ambil kolom pertama yang cocok
-
-    # Pisahkan X dan y
-    X = df_encoded.drop(target_col, axis=1, errors="ignore")
+    X = df_encoded.drop(target_col, axis=1)
     y = df_encoded[target_col]
 
-    # Split data
-    split_ratio = 0.2
-    X_train, X_test, y_train, y_test = train_test_split(
-        X, y, stratify=y, test_size=split_ratio, random_state=42
-    )
+    # Split data train & test (80/20)
+    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
 
-    # Info distribusi train/test
-    train_tercapai = int((y_train == 1).sum())
-    train_tidak = int((y_train == 0).sum())
-    test_tercapai = int((y_test == 1).sum())
-    test_tidak = int((y_test == 0).sum())
+    # Decision Tree
+    dt_model = DecisionTreeClassifier(random_state=42)
+    dt_model.fit(X_train, y_train)
+    y_pred_dt = dt_model.predict(X_test)
+    acc_dt = accuracy_score(y_test, y_pred_dt)
 
-    st.markdown("### Distribusi Data Training & Testing")
-    col1, col2 = st.columns(2)
-    with col1:
-        st.markdown(f"**Training Set:** {len(y_train)} data  \n- Tercapai: {train_tercapai}  \n- Tidak: {train_tidak}")
-    with col2:
-        st.markdown(f"**Testing Set:** {len(y_test)} data  \n- Tercapai: {test_tercapai}  \n- Tidak: {test_tidak}")
+    # Naive Bayes
+    nb_model = GaussianNB()
+    nb_model.fit(X_train, y_train)
+    y_pred_nb = nb_model.predict(X_test)
+    acc_nb = accuracy_score(y_test, y_pred_nb)
 
-    # ================== Model Decision Tree ==================
-    model_c45 = DecisionTreeClassifier(random_state=42)
-    model_c45.fit(X_train, y_train)
+    st.subheader("Hasil Akurasi Model")
+    st.write(f"Decision Tree: **{acc_dt:.2%}**")
+    st.write(f"Naive Bayes: **{acc_nb:.2%}**")
 
-    # Prediksi train & test
-    y_pred_c45_train = model_c45.predict(X_train)
-    y_pred_c45_test = model_c45.predict(X_test)
+    st.subheader("Classification Report - Decision Tree")
+    st.text(classification_report(y_test, y_pred_dt))
 
-    # ================== Model Naive Bayes ==================
-    model_nb = GaussianNB()
-    model_nb.fit(X_train, y_train)
-
-    y_pred_nb_train = model_nb.predict(X_train)
-    y_pred_nb_test = model_nb.predict(X_test)
-
-    # ================== Grafik ==================
-    fig, axes = plt.subplots(1, 2, figsize=(10, 4))
-
-    # Grafik train
-    train_counts = pd.DataFrame({
-        "Model": ["Decision Tree"]*2 + ["Naive Bayes"]*2,
-        "Status": ["Tercapai", "Tidak"]*2,
-        "Jumlah": [
-            (y_pred_c45_train == 1).sum(),
-            (y_pred_c45_train == 0).sum(),
-            (y_pred_nb_train == 1).sum(),
-            (y_pred_nb_train == 0).sum()
-        ]
-    })
-    sns.barplot(data=train_counts, x="Model", y="Jumlah", hue="Status", ax=axes[0])
-    axes[0].set_title("Prediksi Training Set")
-
-    # Grafik test
-    test_counts = pd.DataFrame({
-        "Model": ["Decision Tree"]*2 + ["Naive Bayes"]*2,
-        "Status": ["Tercapai", "Tidak"]*2,
-        "Jumlah": [
-            (y_pred_c45_test == 1).sum(),
-            (y_pred_c45_test == 0).sum(),
-            (y_pred_nb_test == 1).sum(),
-            (y_pred_nb_test == 0).sum()
-        ]
-    })
-    sns.barplot(data=test_counts, x="Model", y="Jumlah", hue="Status", ax=axes[1])
-    axes[1].set_title("Prediksi Testing Set")
-
-    st.pyplot(fig)
-
-else:
-    st.info("Silakan unggah file Excel terlebih dahulu.")
+    st.subheader("Classification Report - Naive Bayes")
+    st.text(classification_report(y_test, y_pred_nb))
