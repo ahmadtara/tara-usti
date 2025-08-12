@@ -56,72 +56,157 @@ if st.session_state.file_uploaded:
     # INFO: jumlah data awal
     jumlah_awal = len(df_raw)
 
-    # Preprocessing (rename + select kolom yang diperlukan)
+    # ----------------- SAFE PREPROCESSING (preserve fitur awal) -----------------
+    # Rename sesuai mapping sebelumnya
     df = df_raw.rename(columns={
         'Topology': 'topologi',
         'Vendor': 'vendor',
         'HP Cluster\n(SND Wajib Isi)': 'hp_cluster',
         'Status PO Cluster (SND Wajib Isi)': 'status_po'
-    })[['topologi', 'vendor', 'hp_cluster', 'status_po']].dropna()
+    })
 
-    # INFO: jumlah setelah preprocess
+    # Buang kolom yang kosong total (jika ada) untuk mencegah noise
+    df = df.dropna(axis=1, how='all')
+
+    # Hapus baris yang tidak mempunyai target (status_po) — kita butuh label untuk training
+    if 'status_po' not in df.columns:
+        st.error("Kolom 'Status PO Cluster (SND Wajib Isi)' tidak ditemukan setelah rename. Periksa header excel.")
+        st.stop()
+    df = df.dropna(subset=['status_po'])
+
+    # Keep only the columns we need (keamanan: pastikan kolom ada)
+    needed_cols = ['topologi', 'vendor', 'hp_cluster', 'status_po']
+    available = [c for c in needed_cols if c in df.columns]
+    if len(available) < 4:
+        st.warning(f"Hanya kolom berikut yang tersedia setelah rename & drop: {available}. Pastikan Excel sesuai format.")
+    # Select existing needed cols (earlier code required exactly these)
+    df = df[[c for c in needed_cols if c in df.columns]]
+
+    # INFO: jumlah setelah preprocess awal (sebelum filling)
     jumlah_setelah = len(df)
-    st.info(f"📋 Jumlah data awal: **{jumlah_awal} baris**  \n🧹 Setelah preprocessing: **{jumlah_setelah} baris**")
+    st.info(f"📋 Jumlah data awal: **{jumlah_awal} baris**  \n🧹 Setelah preprocessing awal: **{jumlah_setelah} baris**")
 
-    # Normalisasi dan label
+    # Normalisasi & label
     df['status_po'] = df['status_po'].astype(str).str.lower().str.strip()
+    # label: 1 jika 'done' (case-insensitive), else 0
     df['label'] = df['status_po'].apply(lambda x: 1 if x == 'done' else 0)
 
-    # Feature encoding / scaling
+    # Isi NaN pada fitur numerik hp_cluster dengan median (agar SMOTE & scaler aman)
+    if 'hp_cluster' in df.columns:
+        median_hp = df['hp_cluster'].median()
+        df['hp_cluster'] = df['hp_cluster'].fillna(median_hp)
+    else:
+        # jika kolom hp_cluster tidak ada, buat default 0 (tapi beri peringatan)
+        st.warning("Kolom 'HP Cluster' tidak ditemukan, membuat kolom 'hp_cluster' default 0.")
+        df['hp_cluster'] = 0.0
+
+    # Encode kategorikal (safe: convert to str before label encoding)
     df['topologi_enc'] = LabelEncoder().fit_transform(df['topologi'].astype(str))
     df['vendor_enc'] = LabelEncoder().fit_transform(df['vendor'].astype(str))
-    df['hp_cluster_norm'] = MinMaxScaler().fit_transform(df[['hp_cluster']])
 
-    # Sidebar controls
+    # Normalisasi hp_cluster ke hp_cluster_norm
+    df['hp_cluster_norm'] = MinMaxScaler().fit_transform(df[['hp_cluster']].astype(float))
+
+    # Sidebar controls (preserve original)
     st.sidebar.header("⚙️ Pengaturan Analisis")
     split_option = st.sidebar.radio("Pilih Rasio Split Data", ["80:20", "70:30", "90:10"])
     metric_option = st.sidebar.radio("Pilih Metrik Evaluasi", ["Accuracy", "Precision", "Recall", "F1-score"])
+    use_smote = st.sidebar.checkbox("Gunakan SMOTE untuk Naive Bayes (imbalance handling)", value=True)
 
     split_map = {"80:20": 0.2, "70:30": 0.3, "90:10": 0.1}
     split_ratio = split_map[split_option]
 
-    X = df[['topologi_enc', 'vendor_enc', 'hp_cluster_norm']]
+    # Siapkan X & y (pastikan numeric)
+    X = df[['topologi_enc', 'vendor_enc', 'hp_cluster_norm']].astype(float)
     y = df['label']
 
-    # SPLIT dengan stratify
-    X_train, X_test, y_train, y_test = train_test_split(X, y, stratify=y, test_size=split_ratio, random_state=42)
-
-    # Oversampling SMOTE hanya di training
-    sm = SMOTE(random_state=42)
-    X_train_res, y_train_res = sm.fit_resample(X_train, y_train)
+    # SPLIT dulu (dengan stratify) sehingga kita bisa tampilkan distribusi train/test
+    # jika stratify gagal (misal semua label sama), fallback tanpa stratify
+    try:
+        X_train, X_test, y_train, y_test = train_test_split(X, y, stratify=y, test_size=split_ratio, random_state=42)
+    except ValueError as e:
+        st.warning(f"Stratify gagal karena distribusi label: {e}. Melakukan split tanpa stratify.")
+        X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=split_ratio, random_state=42)
 
     # Tampilkan distribusi data train & test
     st.markdown("### 📌 Distribusi Data")
     col_info1, col_info2 = st.columns(2)
     with col_info1:
-        st.markdown(f"**Training Set (setelah SMOTE):** {len(y_train_res)} data")
-        st.markdown(f"- Tercapai (label=1): **{int((y_train_res==1).sum())}**")
-        st.markdown(f"- Tidak (label=0): **{int((y_train_res==0).sum())}**")
+        st.markdown(f"**Training Set:** {len(y_train)} data")
+        st.markdown(f"- Tercapai (label=1): **{int((y_train==1).sum())}**")
+        st.markdown(f"- Tidak (label=0): **{int((y_train==0).sum())}**")
     with col_info2:
         st.markdown(f"**Testing Set:** {len(y_test)} data")
         st.markdown(f"- Tercapai (label=1): **{int((y_test==1).sum())}**")
         st.markdown(f"- Tidak (label=0): **{int((y_test==0).sum())}**")
 
-    # Training model
+    # ----------------- SMOTE SAFETY & TRAINING -----------------
+    # Prepare training sets for C4.5 (use original X_train) and NB (optionally resampled)
+    # For fairness we will not change C4.5 pipeline (it uses X_train original), but NB can use SMOTE-resampled.
+    X_train_for_c45 = X_train.copy()
+    y_train_for_c45 = y_train.copy()
+
+    X_train_for_nb = X_train.copy()
+    y_train_for_nb = y_train.copy()
+    smote_used = False
+    smote_error_msg = None
+
+    if use_smote:
+        # Only attempt SMOTE when there are at least 2 classes in y_train
+        vc = y_train.value_counts()
+        if vc.size > 1 and vc.min() > 0:
+            # SMOTE requires that minority class has at least k_neighbors+1 samples.
+            # Default k_neighbors=5, adjust if minority too small.
+            min_count = int(vc.min())
+            if min_count < 2:
+                # too few samples to resample
+                st.warning("Kelas minoritas terlalu kecil untuk SMOTE (min count < 2). SMOTE dilewati untuk Naive Bayes.")
+            else:
+                k_neighbors = 5
+                if min_count - 1 < k_neighbors:
+                    k_neighbors = max(1, min_count - 1)
+                try:
+                    sm = SMOTE(random_state=42, k_neighbors=k_neighbors)
+                    X_train_res, y_train_res = sm.fit_resample(X_train_for_nb, y_train_for_nb)
+                    X_train_for_nb = pd.DataFrame(X_train_res, columns=X_train.columns)
+                    y_train_for_nb = pd.Series(y_train_res)
+                    smote_used = True
+                except Exception as ex:
+                    smote_error_msg = str(ex)
+                    st.warning(f"SMOTE gagal dijalankan: {smote_error_msg}. Melanjutkan tanpa SMOTE untuk Naive Bayes.")
+        else:
+            st.warning("SMOTE dilewati karena hanya ada 1 kelas pada data latih atau distribusi tidak memadai.")
+    else:
+        st.info("SMOTE dinonaktifkan oleh user (sidebar).")
+
+    # Convert training sets to arrays (scaler will be applied to training for NB and for C45 we keep original encoding)
+    # We'll scale hp_cluster feature which already in hp_cluster_norm; still apply MinMaxScaler across numeric features for NB (consistent)
+    scaler_nb = MinMaxScaler()
+    try:
+        X_train_nb_scaled = scaler_nb.fit_transform(X_train_for_nb)
+        X_test_scaled = scaler_nb.transform(X_test)
+    except Exception as e:
+        # fallback if something unexpected: convert to float explicitly
+        X_train_nb_scaled = scaler_nb.fit_transform(X_train_for_nb.astype(float))
+        X_test_scaled = scaler_nb.transform(X_test.astype(float))
+
+    # Training model (letakkan di spinner)
     with st.spinner("🔄 Training model... Mohon tunggu"):
-        # C4.5
+        # C4.5 (Decision Tree) - using original X_train (no SMOTE), consistent with original behavior
         model_c45 = DecisionTreeClassifier(criterion='entropy', random_state=42)
-        model_c45.fit(X_train, y_train)
+        model_c45.fit(X_train_for_c45, y_train_for_c45)
+        # prediksi test & train
         y_pred_c45 = model_c45.predict(X_test)
-        y_pred_c45_train = model_c45.predict(X_train)
+        y_pred_c45_train = model_c45.predict(X_train_for_c45)
 
-        # Naive Bayes (dengan SMOTE)
+        # Naive Bayes - trained on (possibly resampled) X_train_for_nb
         model_nb = GaussianNB()
-        model_nb.fit(X_train_res, y_train_res)
-        y_pred_nb = model_nb.predict(X_test)
-        y_pred_nb_train = model_nb.predict(X_train_res)
+        model_nb.fit(X_train_nb_scaled, y_train_for_nb)
+        # prediksi test & train
+        y_pred_nb = model_nb.predict(X_test_scaled)
+        y_pred_nb_train = model_nb.predict(X_train_nb_scaled)
 
-    # Evaluasi
+    # Evaluasi metrik (gunakan zero_division=0 untuk menghindari error)
     def evaluate(y_true, y_pred):
         return {
             "Accuracy": accuracy_score(y_true, y_pred),
@@ -140,7 +225,7 @@ if st.session_state.file_uploaded:
 
     best = df_eval.sort_values(by=metric_option, ascending=False).iloc[0]
 
-    # Confusion Matrix
+    # Confusion Matrix (testing)
     cm_c45 = confusion_matrix(y_test, y_pred_c45)
     cm_nb = confusion_matrix(y_test, y_pred_nb)
 
@@ -148,12 +233,13 @@ if st.session_state.file_uploaded:
     st.markdown("### 🎯 Hasil Prediksi PO Tercapai & Tidak Tercapai (Training vs Testing)")
     colA, colB = st.columns(2)
 
-    # Hitung jumlah prediksi
+    # Hitung jumlah prediksi (testing)
     c45_tercapai_test = int((y_pred_c45 == 1).sum())
     c45_tidak_test = int((y_pred_c45 == 0).sum())
     nb_tercapai_test = int((y_pred_nb == 1).sum())
     nb_tidak_test = int((y_pred_nb == 0).sum())
 
+    # Hitung jumlah prediksi (training)
     c45_tercapai_train = int((y_pred_c45_train == 1).sum())
     c45_tidak_train = int((y_pred_c45_train == 0).sum())
     nb_tercapai_train = int((y_pred_nb_train == 1).sum())
@@ -191,16 +277,22 @@ if st.session_state.file_uploaded:
         st.markdown("#### 🔵 Naive Bayes")
         sub3, sub4 = st.columns([1, 1])
         with sub3:
-            st.markdown("**Training (SMOTE)**")
-            st.markdown(f"- **Tercapai:** {nb_tercapai_train}  \n- **Tidak:** {nb_tidak_train}")
-            fig_nb_train, ax_nb_train = plt.subplots(figsize=(2.6, 2.2))
-            sns.barplot(x=['Tercapai', 'Tidak'], y=[nb_tercapai_train, nb_tidak_train],
-                        palette=['#4CAF50', '#E53935'], ax=ax_nb_train)
-            for i, v in enumerate([nb_tercapai_train, nb_tidak_train]):
-                ax_nb_train.text(i, v + max(1, v * 0.01), str(v), ha='center', fontsize=8)
-            ax_nb_train.set_ylabel("")
-            ax_nb_train.tick_params(axis='both', labelsize=8)
-            st.pyplot(fig_nb_train)
+            st.markdown("**Training**")
+            # show whether training used SMOTE (informational)
+            if smote_used:
+                st.markdown(f"- **(SMOTE digunakan)**")
+            elif use_smote and smote_error_msg:
+                st.markdown(f"- **(SMOTE gagal: {smote_error_msg} — training tanpa SMOTE)**")
+            with st.container():
+                st.markdown(f"- **Tercapai:** {nb_tercapai_train}  \n- **Tidak:** {nb_tidak_train}")
+                fig_nb_train, ax_nb_train = plt.subplots(figsize=(2.6, 2.2))
+                sns.barplot(x=['Tercapai', 'Tidak'], y=[nb_tercapai_train, nb_tidak_train],
+                            palette=['#4CAF50', '#E53935'], ax=ax_nb_train)
+                for i, v in enumerate([nb_tercapai_train, nb_tidak_train]):
+                    ax_nb_train.text(i, v + max(1, v * 0.01), str(v), ha='center', fontsize=8)
+                ax_nb_train.set_ylabel("")
+                ax_nb_train.tick_params(axis='both', labelsize=8)
+                st.pyplot(fig_nb_train)
         with sub4:
             st.markdown("**Testing**")
             st.markdown(f"- **Tercapai:** {nb_tercapai_test}  \n- **Tidak:** {nb_tidak_test}")
@@ -219,16 +311,39 @@ if st.session_state.file_uploaded:
     prediksi_list = []
 
     for name, ratio in split_ratios.items():
-        X_train_s, X_test_s, y_train_s, y_test_s = train_test_split(X, y, stratify=y, test_size=ratio, random_state=42)
-        X_train_s, y_train_s = SMOTE(random_state=42).fit_resample(X_train_s, y_train_s)
+        # split (try stratify first)
+        try:
+            X_train_s, X_test_s, y_train_s, y_test_s = train_test_split(X, y, stratify=y, test_size=ratio, random_state=42)
+        except ValueError:
+            X_train_s, X_test_s, y_train_s, y_test_s = train_test_split(X, y, test_size=ratio, random_state=42)
 
+        # Apply same SMOTE-safety logic per split for NB & C45 comparison
+        X_train_nb_s = X_train_s.copy()
+        y_train_nb_s = y_train_s.copy()
+        smote_applied_s = False
+        vc_s = y_train_s.value_counts()
+        if use_smote and vc_s.size > 1 and vc_s.min() > 1:
+            k_neigh = 5 if vc_s.min() - 1 >= 5 else max(1, vc_s.min() - 1)
+            try:
+                Xr, yr = SMOTE(random_state=42, k_neighbors=k_neigh).fit_resample(X_train_nb_s, y_train_nb_s)
+                X_train_nb_s = pd.DataFrame(Xr, columns=X_train_s.columns)
+                y_train_nb_s = pd.Series(yr)
+                smote_applied_s = True
+            except Exception:
+                smote_applied_s = False
+
+        # Train C4.5 on training split (without SMOTE resample to match original)
         model_c45_s = DecisionTreeClassifier(criterion='entropy', random_state=42)
         model_c45_s.fit(X_train_s, y_train_s)
         y_pred_c45_s = model_c45_s.predict(X_test_s)
 
+        # Train NB on training split (resampled if applied)
+        scaler_tmp = MinMaxScaler()
+        X_train_nb_s_scaled = scaler_tmp.fit_transform(X_train_nb_s.astype(float))
+        X_test_s_scaled = scaler_tmp.transform(X_test_s.astype(float))
         model_nb_s = GaussianNB()
-        model_nb_s.fit(X_train_s, y_train_s)
-        y_pred_nb_s = model_nb_s.predict(X_test_s)
+        model_nb_s.fit(X_train_nb_s_scaled, y_train_nb_s)
+        y_pred_nb_s = model_nb_s.predict(X_test_s_scaled)
 
         prediksi_list.append({"Split": name, "Model": "C4.5", "Tercapai": int((y_pred_c45_s == 1).sum()), "Tidak Tercapai": int((y_pred_c45_s == 0).sum())})
         prediksi_list.append({"Split": name, "Model": "Naive Bayes", "Tercapai": int((y_pred_nb_s == 1).sum()), "Tidak Tercapai": int((y_pred_nb_s == 0).sum())})
