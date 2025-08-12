@@ -1,103 +1,122 @@
-import pygame
-import random
-import sys
+import streamlit as st
+import pandas as pd
+import matplotlib.pyplot as plt
+import seaborn as sns
+from sklearn.model_selection import train_test_split
+from sklearn.tree import DecisionTreeClassifier
+from sklearn.naive_bayes import GaussianNB
 
-pygame.init()
+st.set_page_config(layout="wide")
+st.title("📊 Analisis Prediksi PO My Republic 2024")
 
-# Ukuran layar
-WIDTH, HEIGHT = 800, 600
-screen = pygame.display.set_mode((WIDTH, HEIGHT))
-pygame.display.set_caption("Frog Game")
+# Upload file
+uploaded_file = st.file_uploader("Unggah file Excel", type=["xlsx"])
+if uploaded_file:
+    # Load data awal
+    df_raw = pd.read_excel(uploaded_file)
+    jumlah_awal = len(df_raw)
 
-# Warna
-GREEN = (0, 200, 0)
-BLUE = (0, 100, 255)
-RED = (255, 0, 0)
-WHITE = (255, 255, 255)
+    # Preprocessing
+    df = df_raw.rename(columns={
+        'Topology': 'topologi',
+        'Vendor': 'vendor',
+        'HP Cluster\n(SND Wajib Isi)': 'hp_cluster',
+        'Status PO Cluster (SND Wajib Isi)': 'status_po'
+    })[['topologi', 'vendor', 'hp_cluster', 'status_po']].dropna()
+    jumlah_setelah = len(df)
 
-# Karakter Katak
-frog_size = 40
-frog_x = WIDTH // 2
-frog_y = HEIGHT - frog_size
-frog_speed = 40
+    # Info jumlah data awal & setelah preprocessing
+    st.info(f"📋 Jumlah data awal: **{jumlah_awal} baris**\n🧹 Setelah preprocessing: **{jumlah_setelah} baris**")
 
-# Mobil
-car_width = 60
-car_height = 40
-car_speed = 5
-cars = []
+    # Encode variabel
+    df_encoded = pd.get_dummies(df, drop_first=True)
+    X = df_encoded.drop('status_po_Tercapai', axis=1)
+    y = df_encoded['status_po_Tercapai']
 
-# Font
-font = pygame.font.SysFont("Arial", 30)
-score = 0
+    # Split data
+    X_train, X_test, y_train, y_test = train_test_split(
+        X, y, stratify=y, test_size=0.3, random_state=42
+    )
 
-clock = pygame.time.Clock()
+    # Info distribusi data train/test
+    train_tercapai = int((y_train == 1).sum())
+    train_tidak = int((y_train == 0).sum())
+    test_tercapai = int((y_test == 1).sum())
+    test_tidak = int((y_test == 0).sum())
 
-def spawn_car():
-    lane_y = random.choice([200, 250, 300, 350])
-    direction = random.choice(["left", "right"])
-    if direction == "left":
-        x = WIDTH
-        speed = -car_speed
-    else:
-        x = -car_width
-        speed = car_speed
-    cars.append({"x": x, "y": lane_y, "speed": speed})
+    st.markdown("### 📌 Distribusi Data Training & Testing")
+    col_info1, col_info2 = st.columns(2)
+    with col_info1:
+        st.markdown(f"**Training Set:** {len(y_train)} data  \n- Tercapai: {train_tercapai}  \n- Tidak: {train_tidak}")
+    with col_info2:
+        st.markdown(f"**Testing Set:** {len(y_test)} data  \n- Tercapai: {test_tercapai}  \n- Tidak: {test_tidak}")
 
-while True:
-    screen.fill(BLUE)
+    # Model
+    model_c45 = DecisionTreeClassifier(random_state=42)
+    model_nb = GaussianNB()
 
-    # Event
-    for event in pygame.event.get():
-        if event.type == pygame.QUIT:
-            pygame.quit()
-            sys.exit()
+    model_c45.fit(X_train, y_train)
+    model_nb.fit(X_train, y_train)
 
-    keys = pygame.key.get_pressed()
-    if keys[pygame.K_LEFT] and frog_x > 0:
-        frog_x -= frog_speed
-    if keys[pygame.K_RIGHT] and frog_x < WIDTH - frog_size:
-        frog_x += frog_speed
-    if keys[pygame.K_UP] and frog_y > 0:
-        frog_y -= frog_speed
-    if keys[pygame.K_DOWN] and frog_y < HEIGHT - frog_size:
-        frog_y += frog_speed
+    # Prediksi testing
+    y_pred_c45_test = model_c45.predict(X_test)
+    y_pred_nb_test = model_nb.predict(X_test)
 
-    # Spawn mobil
-    if random.randint(1, 60) == 1:
-        spawn_car()
+    # Prediksi training
+    y_pred_c45_train = model_c45.predict(X_train)
+    y_pred_nb_train = model_nb.predict(X_train)
 
-    # Update mobil
-    for car in cars:
-        car["x"] += car["speed"]
+    # Hitung jumlah tercapai/tidak (testing)
+    c45_tercapai_test = int((y_pred_c45_test == 1).sum())
+    c45_tidak_test = int((y_pred_c45_test == 0).sum())
+    nb_tercapai_test = int((y_pred_nb_test == 1).sum())
+    nb_tidak_test = int((y_pred_nb_test == 0).sum())
 
-    # Hapus mobil di luar layar
-    cars = [c for c in cars if -car_width < c["x"] < WIDTH + car_width]
+    # Hitung jumlah tercapai/tidak (training)
+    c45_tercapai_train = int((y_pred_c45_train == 1).sum())
+    c45_tidak_train = int((y_pred_c45_train == 0).sum())
+    nb_tercapai_train = int((y_pred_nb_train == 1).sum())
+    nb_tidak_train = int((y_pred_nb_train == 0).sum())
 
-    # Gambar mobil
-    for car in cars:
-        pygame.draw.rect(screen, RED, (car["x"], car["y"], car_width, car_height))
-        # Cek tabrakan
-        if (frog_x < car["x"] + car_width and
-            frog_x + frog_size > car["x"] and
-            frog_y < car["y"] + car_height and
-            frog_y + frog_size > car["y"]):
-            frog_x = WIDTH // 2
-            frog_y = HEIGHT - frog_size
-            score = 0  # Reset skor
+    # Layout hasil visualisasi
+    colA, colB = st.columns(2)
 
-    # Cek kalau katak sampai atas
-    if frog_y <= 50:
-        score += 1
-        frog_x = WIDTH // 2
-        frog_y = HEIGHT - frog_size
+    # Chart C4.5
+    with colA:
+        st.subheader("🔴 C4.5 Decision Tree")
 
-    # Gambar katak
-    pygame.draw.rect(screen, GREEN, (frog_x, frog_y, frog_size, frog_size))
+        st.markdown("**Data Training:**")
+        st.write(f"- Tercapai: {c45_tercapai_train}")
+        st.write(f"- Tidak: {c45_tidak_train}")
+        fig_c45_train, ax_c45_train = plt.subplots(figsize=(2.2, 2))
+        sns.barplot(x=['Tercapai', 'Tidak'], y=[c45_tercapai_train, c45_tidak_train],
+                    palette=['#4CAF50', '#E53935'], ax=ax_c45_train)
+        st.pyplot(fig_c45_train)
 
-    # Gambar skor
-    score_text = font.render(f"Score: {score}", True, WHITE)
-    screen.blit(score_text, (10, 10))
+        st.markdown("**Data Testing:**")
+        st.write(f"- Tercapai: {c45_tercapai_test}")
+        st.write(f"- Tidak: {c45_tidak_test}")
+        fig_c45_test, ax_c45_test = plt.subplots(figsize=(2.2, 2))
+        sns.barplot(x=['Tercapai', 'Tidak'], y=[c45_tercapai_test, c45_tidak_test],
+                    palette=['#4CAF50', '#E53935'], ax=ax_c45_test)
+        st.pyplot(fig_c45_test)
 
-    pygame.display.flip()
-    clock.tick(30)
+    # Chart Naive Bayes
+    with colB:
+        st.subheader("🔵 Naive Bayes")
+
+        st.markdown("**Data Training:**")
+        st.write(f"- Tercapai: {nb_tercapai_train}")
+        st.write(f"- Tidak: {nb_tidak_train}")
+        fig_nb_train, ax_nb_train = plt.subplots(figsize=(2.2, 2))
+        sns.barplot(x=['Tercapai', 'Tidak'], y=[nb_tercapai_train, nb_tidak_train],
+                    palette=['#4CAF50', '#E53935'], ax=ax_nb_train)
+        st.pyplot(fig_nb_train)
+
+        st.markdown("**Data Testing:**")
+        st.write(f"- Tercapai: {nb_tercapai_test}")
+        st.write(f"- Tidak: {nb_tidak_test}")
+        fig_nb_test, ax_nb_test = plt.subplots(figsize=(2.2, 2))
+        sns.barplot(x=['Tercapai', 'Tidak'], y=[nb_tercapai_test, nb_tidak_test],
+                    palette=['#4CAF50', '#E53935'], ax=ax_nb_test)
+        st.pyplot(fig_nb_test)
