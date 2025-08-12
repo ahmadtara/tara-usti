@@ -7,8 +7,8 @@ from sklearn.preprocessing import LabelEncoder, MinMaxScaler
 from sklearn.tree import DecisionTreeClassifier
 from sklearn.naive_bayes import GaussianNB
 from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score, confusion_matrix
-import io
 from imblearn.over_sampling import SMOTE
+import io
 
 # ----------------- CONFIG -----------------
 st.set_page_config(page_title="Dashboard Analisis C4.5 vs Naive Bayes", layout="wide")
@@ -70,7 +70,6 @@ if st.session_state.file_uploaded:
 
     # Normalisasi dan label
     df['status_po'] = df['status_po'].astype(str).str.lower().str.strip()
-    # label: 1 jika 'done' (atau 'done' lowercase), else 0
     df['label'] = df['status_po'].apply(lambda x: 1 if x == 'done' else 0)
 
     # Feature encoding / scaling
@@ -89,53 +88,40 @@ if st.session_state.file_uploaded:
     X = df[['topologi_enc', 'vendor_enc', 'hp_cluster_norm']]
     y = df['label']
 
-    # SPLIT dulu (dengan stratify) sehingga kita bisa tampilkan distribusi train/test
+    # SPLIT dengan stratify
     X_train, X_test, y_train, y_test = train_test_split(X, y, stratify=y, test_size=split_ratio, random_state=42)
+
+    # Oversampling SMOTE hanya di training
+    sm = SMOTE(random_state=42)
+    X_train_res, y_train_res = sm.fit_resample(X_train, y_train)
 
     # Tampilkan distribusi data train & test
     st.markdown("### 📌 Distribusi Data")
     col_info1, col_info2 = st.columns(2)
     with col_info1:
-        st.markdown(f"**Training Set:** {len(y_train)} data")
-        st.markdown(f"- Tercapai (label=1): **{int((y_train==1).sum())}**")
-        st.markdown(f"- Tidak (label=0): **{int((y_train==0).sum())}**")
+        st.markdown(f"**Training Set (setelah SMOTE):** {len(y_train_res)} data")
+        st.markdown(f"- Tercapai (label=1): **{int((y_train_res==1).sum())}**")
+        st.markdown(f"- Tidak (label=0): **{int((y_train_res==0).sum())}**")
     with col_info2:
         st.markdown(f"**Testing Set:** {len(y_test)} data")
         st.markdown(f"- Tercapai (label=1): **{int((y_test==1).sum())}**")
         st.markdown(f"- Tidak (label=0): **{int((y_test==0).sum())}**")
 
-    # Training model (letakkan di spinner)
+    # Training model
     with st.spinner("🔄 Training model... Mohon tunggu"):
+        # C4.5
         model_c45 = DecisionTreeClassifier(criterion='entropy', random_state=42)
         model_c45.fit(X_train, y_train)
-        # prediksi test & train
         y_pred_c45 = model_c45.predict(X_test)
         y_pred_c45_train = model_c45.predict(X_train)
 
-        # Pastikan tidak ada NaN di X_train atau y_train
-        X_train = X_train.dropna()
-        y_train = y_train[X_train.index]  # Menyinkronkan y_train dengan X_train setelah menghapus NaN
-
-        # Pastikan semua fitur numerik
-        X_train = X_train.apply(pd.to_numeric, errors='coerce')
-        X_train = X_train.dropna()  # Hapus baris yang memiliki nilai NaN setelah di-convert ke numerik
-        y_train = y_train[X_train.index]  # Menyinkronkan y_train dengan X_train setelah menghapus NaN
-
-        # Verifikasi dimensi data
-        st.write("X_train shape:", X_train.shape)
-        st.write("y_train shape:", y_train.shape)
-
-        # SMOTE untuk menyeimbangkan data training sebelum digunakan di Naive Bayes
-        sm = SMOTE(random_state=42)
-        X_train_resampled, y_train_resampled = sm.fit_resample(X_train, y_train)
-
+        # Naive Bayes (dengan SMOTE)
         model_nb = GaussianNB()
-        model_nb.fit(X_train_resampled, y_train_resampled)
-        # prediksi test & prediksi ulang training untuk evaluasi
+        model_nb.fit(X_train_res, y_train_res)
         y_pred_nb = model_nb.predict(X_test)
-        y_pred_nb_train = model_nb.predict(X_train)
+        y_pred_nb_train = model_nb.predict(X_train_res)
 
-    # Evaluasi metrik (gunakan zero_division=0 untuk menghindari error)
+    # Evaluasi
     def evaluate(y_true, y_pred):
         return {
             "Accuracy": accuracy_score(y_true, y_pred),
@@ -154,7 +140,7 @@ if st.session_state.file_uploaded:
 
     best = df_eval.sort_values(by=metric_option, ascending=False).iloc[0]
 
-    # Confusion Matrix (testing)
+    # Confusion Matrix
     cm_c45 = confusion_matrix(y_test, y_pred_c45)
     cm_nb = confusion_matrix(y_test, y_pred_nb)
 
@@ -162,13 +148,12 @@ if st.session_state.file_uploaded:
     st.markdown("### 🎯 Hasil Prediksi PO Tercapai & Tidak Tercapai (Training vs Testing)")
     colA, colB = st.columns(2)
 
-    # Hitung jumlah prediksi (testing)
+    # Hitung jumlah prediksi
     c45_tercapai_test = int((y_pred_c45 == 1).sum())
     c45_tidak_test = int((y_pred_c45 == 0).sum())
     nb_tercapai_test = int((y_pred_nb == 1).sum())
     nb_tidak_test = int((y_pred_nb == 0).sum())
 
-    # Hitung jumlah prediksi (training)
     c45_tercapai_train = int((y_pred_c45_train == 1).sum())
     c45_tidak_train = int((y_pred_c45_train == 0).sum())
     nb_tercapai_train = int((y_pred_nb_train == 1).sum())
@@ -206,7 +191,7 @@ if st.session_state.file_uploaded:
         st.markdown("#### 🔵 Naive Bayes")
         sub3, sub4 = st.columns([1, 1])
         with sub3:
-            st.markdown("**Training**")
+            st.markdown("**Training (SMOTE)**")
             st.markdown(f"- **Tercapai:** {nb_tercapai_train}  \n- **Tidak:** {nb_tidak_train}")
             fig_nb_train, ax_nb_train = plt.subplots(figsize=(2.6, 2.2))
             sns.barplot(x=['Tercapai', 'Tidak'], y=[nb_tercapai_train, nb_tidak_train],
@@ -235,23 +220,18 @@ if st.session_state.file_uploaded:
 
     for name, ratio in split_ratios.items():
         X_train_s, X_test_s, y_train_s, y_test_s = train_test_split(X, y, stratify=y, test_size=ratio, random_state=42)
+        X_train_s, y_train_s = SMOTE(random_state=42).fit_resample(X_train_s, y_train_s)
 
         model_c45_s = DecisionTreeClassifier(criterion='entropy', random_state=42)
         model_c45_s.fit(X_train_s, y_train_s)
         y_pred_c45_s = model_c45_s.predict(X_test_s)
-        c45_tercapai_s = int((y_pred_c45_s == 1).sum())
-        c45_tidak_s = int((y_pred_c45_s == 0).sum())
 
         model_nb_s = GaussianNB()
-        sm = SMOTE(random_state=42)
-        X_train_resampled_s, y_train_resampled_s = sm.fit_resample(X_train_s, y_train_s)
-        model_nb_s.fit(X_train_resampled_s, y_train_resampled_s)
+        model_nb_s.fit(X_train_s, y_train_s)
         y_pred_nb_s = model_nb_s.predict(X_test_s)
-        nb_tercapai_s = int((y_pred_nb_s == 1).sum())
-        nb_tidak_s = int((y_pred_nb_s == 0).sum())
 
-        prediksi_list.append({"Split": name, "Model": "C4.5", "Tercapai": c45_tercapai_s, "Tidak Tercapai": c45_tidak_s})
-        prediksi_list.append({"Split": name, "Model": "Naive Bayes", "Tercapai": nb_tercapai_s, "Tidak Tercapai": nb_tidak_s})
+        prediksi_list.append({"Split": name, "Model": "C4.5", "Tercapai": int((y_pred_c45_s == 1).sum()), "Tidak Tercapai": int((y_pred_c45_s == 0).sum())})
+        prediksi_list.append({"Split": name, "Model": "Naive Bayes", "Tercapai": int((y_pred_nb_s == 1).sum()), "Tidak Tercapai": int((y_pred_nb_s == 0).sum())})
 
     df_split_prediksi = pd.DataFrame(prediksi_list)
     st.dataframe(df_split_prediksi.style.set_properties(**{'text-align': 'center'}).highlight_max(subset=["Tercapai"], color="lightgreen"))
