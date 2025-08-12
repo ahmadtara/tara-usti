@@ -7,6 +7,7 @@ from sklearn.preprocessing import LabelEncoder, MinMaxScaler
 from sklearn.tree import DecisionTreeClassifier
 from sklearn.naive_bayes import GaussianNB
 from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score, confusion_matrix
+# import SMOTE but we'll handle runtime errors when using it
 from imblearn.over_sampling import SMOTE
 import io
 
@@ -142,7 +143,6 @@ if st.session_state.file_uploaded:
 
     # ----------------- SMOTE SAFETY & TRAINING -----------------
     # Prepare training sets for C4.5 (use original X_train) and NB (optionally resampled)
-    # For fairness we will not change C4.5 pipeline (it uses X_train original), but NB can use SMOTE-resampled.
     X_train_for_c45 = X_train.copy()
     y_train_for_c45 = y_train.copy()
 
@@ -166,6 +166,7 @@ if st.session_state.file_uploaded:
                 if min_count - 1 < k_neighbors:
                     k_neighbors = max(1, min_count - 1)
                 try:
+                    # Try to run SMOTE; catch any runtime/version error and fallback
                     sm = SMOTE(random_state=42, k_neighbors=k_neighbors)
                     X_train_res, y_train_res = sm.fit_resample(X_train_for_nb, y_train_for_nb)
                     X_train_for_nb = pd.DataFrame(X_train_res, columns=X_train.columns)
@@ -179,14 +180,13 @@ if st.session_state.file_uploaded:
     else:
         st.info("SMOTE dinonaktifkan oleh user (sidebar).")
 
-    # Convert training sets to arrays (scaler will be applied to training for NB and for C45 we keep original encoding)
-    # We'll scale hp_cluster feature which already in hp_cluster_norm; still apply MinMaxScaler across numeric features for NB (consistent)
+    # Convert training sets to arrays (scaler will be applied to training for NB)
     scaler_nb = MinMaxScaler()
     try:
         X_train_nb_scaled = scaler_nb.fit_transform(X_train_for_nb)
         X_test_scaled = scaler_nb.transform(X_test)
-    except Exception as e:
-        # fallback if something unexpected: convert to float explicitly
+    except Exception:
+        # fallback if something unexpected: cast explicitly then scale
         X_train_nb_scaled = scaler_nb.fit_transform(X_train_for_nb.astype(float))
         X_test_scaled = scaler_nb.transform(X_test.astype(float))
 
@@ -199,7 +199,7 @@ if st.session_state.file_uploaded:
         y_pred_c45 = model_c45.predict(X_test)
         y_pred_c45_train = model_c45.predict(X_train_for_c45)
 
-        # Naive Bayes - trained on (possibly resampled) X_train_for_nb
+        # Naive Bayes - trained on (possibly resampled) X_train_for_nb (scaled)
         model_nb = GaussianNB()
         model_nb.fit(X_train_nb_scaled, y_train_for_nb)
         # prediksi test & train
