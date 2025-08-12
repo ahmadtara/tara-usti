@@ -121,6 +121,10 @@ if st.session_state.file_uploaded:
         X_train = X_train.dropna()  # Hapus baris yang memiliki nilai NaN setelah di-convert ke numerik
         y_train = y_train[X_train.index]  # Menyinkronkan y_train dengan X_train setelah menghapus NaN
 
+        # Verifikasi dimensi data
+        st.write("X_train shape:", X_train.shape)
+        st.write("y_train shape:", y_train.shape)
+
         # SMOTE untuk menyeimbangkan data training sebelum digunakan di Naive Bayes
         sm = SMOTE(random_state=42)
         X_train_resampled, y_train_resampled = sm.fit_resample(X_train, y_train)
