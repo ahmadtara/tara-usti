@@ -112,7 +112,7 @@ if st.session_state.file_uploaded:
     st.sidebar.header("⚙️ Pengaturan Analisis")
     split_option = st.sidebar.radio("Pilih Rasio Split Data", ["80:20", "70:30", "90:10"])
     metric_option = st.sidebar.radio("Pilih Metrik Evaluasi", ["Accuracy", "Precision", "Recall", "F1-score"])
-    use_smote = st.sidebar.checkbox("Gunakan SMOTE untuk Naive Bayes (imbalance handling)", value=True)
+    use_smote = st.sidebar.checkbox("", value=True)
 
     split_map = {"80:20": 0.2, "70:30": 0.3, "90:10": 0.1}
     split_ratio = split_map[split_option]
@@ -175,9 +175,9 @@ if st.session_state.file_uploaded:
                 except Exception as ex:
                     smote_error_msg = str(ex)
                     
-            st.warning("SMOTE dilewati karena hanya ada 1 kelas pada data latih atau distribusi tidak memadai.")
+            st.warning("")
     else:
-        st.info("SMOTE dinonaktifkan oleh user (sidebar).")
+        st.info("")
 
     # Convert training sets to arrays (scaler will be applied to training for NB)
     scaler_nb = MinMaxScaler()
@@ -392,5 +392,6 @@ if st.session_state.file_uploaded:
     # ----------------- TABEL -----------------
     st.markdown("<h3 style='color:#81C784;'>📄 Tabel Evaluasi Lengkap</h3>", unsafe_allow_html=True)
     st.dataframe(df_eval.style.highlight_max(axis=0, color='lightgreen'))
+
 
 
