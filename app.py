@@ -280,8 +280,7 @@ if st.session_state.file_uploaded:
             # show whether training used SMOTE (informational)
             if smote_used:
                 st.markdown(f"- **(SMOTE digunakan)**")
-            elif use_smote and smote_error_msg:
-               
+           
             with st.container():
                 st.markdown(f"- **Tercapai:** {nb_tercapai_train}  \n- **Tidak:** {nb_tidak_train}")
                 fig_nb_train, ax_nb_train = plt.subplots(figsize=(2.6, 2.2))
@@ -393,4 +392,5 @@ if st.session_state.file_uploaded:
     # ----------------- TABEL -----------------
     st.markdown("<h3 style='color:#81C784;'>📄 Tabel Evaluasi Lengkap</h3>", unsafe_allow_html=True)
     st.dataframe(df_eval.style.highlight_max(axis=0, color='lightgreen'))
+
 
