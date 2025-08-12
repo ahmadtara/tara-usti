@@ -118,7 +118,6 @@ if st.session_state.file_uploaded:
 
         model_nb = GaussianNB()
         model_nb.fit(X_train_resampled, y_train_resampled)
-
         # prediksi test & prediksi ulang training untuk evaluasi
         y_pred_nb = model_nb.predict(X_test)
         y_pred_nb_train = model_nb.predict(X_train)
@@ -231,7 +230,9 @@ if st.session_state.file_uploaded:
         c45_tidak_s = int((y_pred_c45_s == 0).sum())
 
         model_nb_s = GaussianNB()
-        model_nb_s.fit(X_train_s, y_train_s)
+        sm = SMOTE(random_state=42)
+        X_train_resampled_s, y_train_resampled_s = sm.fit_resample(X_train_s, y_train_s)
+        model_nb_s.fit(X_train_resampled_s, y_train_resampled_s)
         y_pred_nb_s = model_nb_s.predict(X_test_s)
         nb_tercapai_s = int((y_pred_nb_s == 1).sum())
         nb_tidak_s = int((y_pred_nb_s == 0).sum())
@@ -285,5 +286,3 @@ if st.session_state.file_uploaded:
     # ----------------- TABEL -----------------
     st.markdown("<h3 style='color:#81C784;'>📄 Tabel Evaluasi Lengkap</h3>", unsafe_allow_html=True)
     st.dataframe(df_eval.style.highlight_max(axis=0, color='lightgreen'))
-
-
