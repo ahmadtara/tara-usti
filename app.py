@@ -8,6 +8,7 @@ from sklearn.tree import DecisionTreeClassifier
 from sklearn.naive_bayes import GaussianNB
 from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score, confusion_matrix
 import io
+from imblearn.over_sampling import SMOTE
 
 # ----------------- CONFIG -----------------
 st.set_page_config(page_title="Dashboard Analisis C4.5 vs Naive Bayes", layout="wide")
@@ -118,9 +119,9 @@ if st.session_state.file_uploaded:
         model_nb = GaussianNB()
         model_nb.fit(X_train_resampled, y_train_resampled)
 
-# prediksi test & prediksi ulang training untuk evaluasi
-y_pred_nb = model_nb.predict(X_test)
-y_pred_nb_train = model_nb.predict(X_train)
+        # prediksi test & prediksi ulang training untuk evaluasi
+        y_pred_nb = model_nb.predict(X_test)
+        y_pred_nb_train = model_nb.predict(X_train)
 
     # Evaluasi metrik (gunakan zero_division=0 untuk menghindari error)
     def evaluate(y_true, y_pred):
@@ -284,4 +285,5 @@ y_pred_nb_train = model_nb.predict(X_train)
     # ----------------- TABEL -----------------
     st.markdown("<h3 style='color:#81C784;'>📄 Tabel Evaluasi Lengkap</h3>", unsafe_allow_html=True)
     st.dataframe(df_eval.style.highlight_max(axis=0, color='lightgreen'))
+
 
