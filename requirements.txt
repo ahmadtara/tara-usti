@@ -1,7 +1,10 @@
 streamlit
 pandas
-matplotlib
-seaborn
-scikit-learn
-openpyxl
-imbalanced-learn
+geopandas
+shapely
+fiona
+ezdxf
+osmnx
+rtree
+pyproj
+tqdm
