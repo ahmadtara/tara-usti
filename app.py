@@ -19,6 +19,10 @@ MIN_BUILDING_AREA_M2 = 20
 SNAP_GRID_M = 0.2
 CSV_URL = "https://storage.googleapis.com/open-buildings-data/v3/polygons_s2_level_4_gzip/31d_buildings.csv.gz"
 
+# Bounding box Pekanbaru (bisa disesuaikan lebih luas/sempit)
+LAT_MIN, LAT_MAX = 0.48, 0.54
+LON_MIN, LON_MAX = 101.38, 101.48
+
 # -----------------------------
 # 2) Utility functions
 # -----------------------------
@@ -44,13 +48,23 @@ def snap_to_grid(geom, grid_size=SNAP_GRID_M):
     return ops.transform(lambda x, y: (round(x/grid_size)*grid_size, round(y/grid_size)*grid_size), geom)
 
 # -----------------------------
-# 3) Load buildings from GCS
+# 3) Load buildings from GCS (filtered Pekanbaru)
 # -----------------------------
 @st.cache_data
 def load_buildings():
     df = pd.read_csv(CSV_URL, compression="gzip")
+
     if "geometry" not in df.columns:
         raise RuntimeError("CSV must contain 'geometry' column with WKT polygons.")
+
+    # filter bounding box Pekanbaru
+    mask = (
+        (df["latitude"] >= LAT_MIN) & (df["latitude"] <= LAT_MAX) &
+        (df["longitude"] >= LON_MIN) & (df["longitude"] <= LON_MAX)
+    )
+    df = df[mask].copy()
+
+    # parse WKT
     df["geometry"] = df["geometry"].apply(shapely.wkt.loads)
     return gpd.GeoDataFrame(df, geometry="geometry", crs="EPSG:4326")
 
@@ -69,8 +83,8 @@ if boundary_file:
     gdf_boundary = gpd.read_file(boundary_file)
     boundary = gdf_boundary.unary_union
 
-    # Load Open Buildings
-    st.info("Downloading Open Buildings CSV from GCS...")
+    # Load Open Buildings Pekanbaru
+    st.info("Downloading Open Buildings CSV from GCS (filtered Pekanbaru)...")
     gdf_buildings = load_buildings()
 
     # Filter buildings inside boundary
