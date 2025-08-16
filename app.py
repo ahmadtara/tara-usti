@@ -48,25 +48,35 @@ def snap_to_grid(geom, grid_size=SNAP_GRID_M):
     return ops.transform(lambda x, y: (round(x/grid_size)*grid_size, round(y/grid_size)*grid_size), geom)
 
 # -----------------------------
-# 3) Load buildings from GCS (filtered Pekanbaru)
+# 3) Load buildings from GCS (filtered Pekanbaru dengan chunksize)
 # -----------------------------
 @st.cache_data
 def load_buildings():
-    df = pd.read_csv(CSV_URL, compression="gzip")
+    dfs = []
+    chunksize = 50000  # baca 50k rows sekali
+    for chunk in pd.read_csv(CSV_URL, compression="gzip", chunksize=chunksize):
+        if "geometry" not in chunk.columns:
+            continue
 
-    if "geometry" not in df.columns:
-        raise RuntimeError("CSV must contain 'geometry' column with WKT polygons.")
+        # filter bounding box Pekanbaru (pakai kolom lat/lon bawaan)
+        mask = (
+            (chunk["latitude"] >= LAT_MIN) & (chunk["latitude"] <= LAT_MAX) &
+            (chunk["longitude"] >= LON_MIN) & (chunk["longitude"] <= LON_MAX)
+        )
+        chunk = chunk[mask]
+        if len(chunk) == 0:
+            continue
 
-    # filter bounding box Pekanbaru
-    mask = (
-        (df["latitude"] >= LAT_MIN) & (df["latitude"] <= LAT_MAX) &
-        (df["longitude"] >= LON_MIN) & (df["longitude"] <= LON_MAX)
-    )
-    df = df[mask].copy()
+        # parse WKT → shapely geometry
+        chunk["geometry"] = chunk["geometry"].apply(shapely.wkt.loads)
+        dfs.append(chunk)
 
-    # parse WKT
-    df["geometry"] = df["geometry"].apply(shapely.wkt.loads)
+    if not dfs:
+        return gpd.GeoDataFrame(columns=["geometry"], geometry="geometry", crs="EPSG:4326")
+
+    df = pd.concat(dfs, ignore_index=True)
     return gpd.GeoDataFrame(df, geometry="geometry", crs="EPSG:4326")
+
 
 # -----------------------------
 # 4) Streamlit UI
@@ -161,3 +171,4 @@ if boundary_file:
     zip_buffer.seek(0)
 
     st.download_button("⬇️ Download results (GeoJSON + DXF)", data=zip_buffer, file_name="results.zip", mime="application/zip")
+
