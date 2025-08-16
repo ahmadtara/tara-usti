@@ -91,11 +91,23 @@ if boundary_file:
 
     # Load boundary
     gdf_boundary = gpd.read_file(boundary_file)
+
+    # pastikan CRS boundary sama dengan buildings (EPSG:4326)
+    if gdf_boundary.crs is None:
+        st.warning("Boundary CRS tidak terdeteksi, diasumsikan EPSG:4326")
+        gdf_boundary.set_crs("EPSG:4326", inplace=True)
+    else:
+        gdf_boundary = gdf_boundary.to_crs("EPSG:4326")
+
     boundary = gdf_boundary.unary_union
 
     # Load Open Buildings Pekanbaru
     st.info("Downloading Open Buildings CSV from GCS (filtered Pekanbaru)...")
     gdf_buildings = load_buildings()
+
+    # Debug info
+    st.write("Boundary bounds:", gdf_boundary.total_bounds)
+    st.write("Buildings bounds:", gdf_buildings.total_bounds)
 
     # Filter buildings inside boundary
     gdf_filtered = gdf_buildings[gdf_buildings.intersects(boundary)].copy()
@@ -171,4 +183,6 @@ if boundary_file:
     zip_buffer.seek(0)
 
     st.download_button("⬇️ Download results (GeoJSON + DXF)", data=zip_buffer, file_name="results.zip", mime="application/zip")
+
+
 
