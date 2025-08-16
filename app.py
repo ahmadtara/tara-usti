@@ -1,110 +1,118 @@
-# streamlit_app.py
 import streamlit as st
 import pandas as pd
 import geopandas as gpd
 import shapely.wkt
-import shapely.ops as ops
-import zipfile, os, math
-from shapely.geometry import Point, Polygon, LineString, MultiLineString, MultiPolygon, box
-from shapely.ops import unary_union, polygonize, linemerge
+from shapely.geometry import Polygon, MultiPolygon
+import fiona
 import ezdxf
 import osmnx as ox
-from io import BytesIO
 
-# ============ Parameters ============
-TARGET_EPSG = "EPSG:32760"
-DEFAULT_WIDTH = 10
-MIN_BUILDING_AREA_M2 = 20
-SNAP_GRID_M = 0.2
+# ========== Utility Functions ==========
+def classify_layer(highway):
+    mapping = {
+        "motorway": "PRIMARY",
+        "trunk": "PRIMARY",
+        "primary": "PRIMARY",
+        "secondary": "SECONDARY",
+        "tertiary": "SECONDARY",
+        "residential": "TERTIARY",
+        "unclassified": "TERTIARY",
+        "service": "TERTIARY",
+    }
+    return mapping.get(highway, "OTHER")
 
-# ============ Streamlit UI ============
-st.title("Roads + Open Buildings Processor")
+def strip_z(geom):
+    """Remove Z coordinate if exists"""
+    if geom.is_empty:
+        return geom
+    if geom.has_z:
+        return shapely.wkt.loads(shapely.wkt.dumps(geom, output_dimension=2))
+    return geom
 
-# Upload KML/KMZ
-uploaded_kml = st.file_uploader("Upload KML/KMZ boundary", type=["kml", "kmz"])
-uploaded_csv = st.file_uploader("Upload Open Buildings CSV", type=["csv"])
+# ========== Streamlit App ==========
+st.title("🏗️ Roads + Open Buildings Processor")
 
-if uploaded_kml and uploaded_csv:
-    # --- handle KML/KMZ
-    if uploaded_kml.name.endswith(".kmz"):
-        with zipfile.ZipFile(uploaded_kml, 'r') as z:
-            z.extractall("kmz_extract")
-        kml_files = [f for f in os.listdir("kmz_extract") if f.lower().endswith(".kml")]
-        if not kml_files:
-            st.error("No KML found in KMZ")
+# Upload boundary file
+boundary_file = st.file_uploader("Upload KML/KMZ boundary", type=["kml", "kmz"])
+csv_file = st.file_uploader("Upload Open Buildings CSV", type=["csv"])
+
+if boundary_file and csv_file:
+    try:
+        # Read boundary
+        st.write("### Loading boundary...")
+        boundary_gdf = gpd.read_file(boundary_file)
+        boundary = boundary_gdf.geometry.iloc[0]
+        st.success(f"Boundary loaded! Type: {boundary.geom_type}")
+
+        # Read Open Buildings
+        st.write("### Loading Open Buildings...")
+        df = pd.read_csv(csv_file)
+        if "geometry" not in df.columns:
+            st.error("CSV must contain 'geometry' column with WKT polygons.")
             st.stop()
-        kml_path = os.path.join("kmz_extract", kml_files[0])
-    else:
-        kml_path = uploaded_kml
 
-    gdf_kml = gpd.read_file(kml_path)
-    polygons = gdf_kml[gdf_kml.geometry.type.isin(["Polygon","MultiPolygon"])]
-    if polygons.empty:
-        st.error("No polygon found in boundary")
-        st.stop()
-    boundary_polygon = unary_union(polygons.geometry)
-    boundary_crs = polygons.crs if polygons.crs else "EPSG:4326"
+        df["geometry"] = df["geometry"].apply(shapely.wkt.loads)
+        gdf_buildings = gpd.GeoDataFrame(df, geometry="geometry", crs="EPSG:4326")
 
-    st.success("Boundary loaded!")
+        # Filter by boundary
+        st.write("### Filtering buildings inside boundary...")
+        gdf_buildings = gdf_buildings[gdf_buildings.intersects(boundary)]
+        st.success(f"Buildings after filter: {len(gdf_buildings)}")
 
-    # --- handle CSV
-    df = pd.read_csv(uploaded_csv)
-    if "geometry" not in df.columns:
-        st.error("CSV must contain 'geometry' column (WKT polygons)")
-        st.stop()
-    df["geometry"] = df["geometry"].apply(shapely.wkt.loads)
-    gdf_buildings = gpd.GeoDataFrame(df, geometry="geometry", crs="EPSG:4326")
+        # Roads from OSM
+        st.write("### Downloading OSM roads...")
+        roads = ox.graph_from_polygon(boundary, network_type="drive")
+        gdf_roads = ox.graph_to_gdfs(roads, nodes=False)
+        gdf_roads["layer"] = gdf_roads["highway"].apply(classify_layer)
 
-    # filter inside boundary
-    boundary_ll = gpd.GeoSeries([boundary_polygon], crs=boundary_crs).to_crs("EPSG:4326").iloc[0]
-    gdf_buildings = gdf_buildings[gdf_buildings.centroid.within(boundary_ll)].copy()
+        # Export to DXF
+        st.write("### Exporting to DXF...")
+        doc = ezdxf.new()
+        msp = doc.modelspace()
 
-    # reproject + filter small
-    gdf_buildings = gdf_buildings.to_crs(TARGET_EPSG)
-    gdf_buildings["area_m2"] = gdf_buildings.area
-    gdf_buildings = gdf_buildings[gdf_buildings["area_m2"] >= MIN_BUILDING_AREA_M2]
+        # Add boundary
+        if boundary.geom_type == "Polygon":
+            coords = [(x, y) for x, y in boundary.exterior.coords]
+            msp.add_lwpolyline(coords, dxfattribs={"layer": "BOUNDARY"})
+        elif boundary.geom_type == "MultiPolygon":
+            for poly in boundary.geoms:
+                coords = [(x, y) for x, y in poly.exterior.coords]
+                msp.add_lwpolyline(coords, dxfattribs={"layer": "BOUNDARY"})
 
-    st.write("Buildings after filter:", len(gdf_buildings))
+        # Add buildings
+        for geom in gdf_buildings.geometry:
+            if geom.geom_type == "Polygon":
+                coords = [(x, y) for x, y in geom.exterior.coords]
+                msp.add_lwpolyline(coords, dxfattribs={"layer": "BUILDINGS"})
+            elif geom.geom_type == "MultiPolygon":
+                for poly in geom.geoms:
+                    coords = [(x, y) for x, y in poly.exterior.coords]
+                    msp.add_lwpolyline(coords, dxfattribs={"layer": "BUILDINGS"})
 
-    # roads from OSM
-    boundary_wgs84 = gpd.GeoSeries([boundary_polygon], crs=boundary_crs).to_crs("EPSG:4326").iloc[0]
-    tags = {"highway": True}
-    roads = ox.features_from_polygon(boundary_wgs84, tags=tags)
-    roads = roads[roads.geometry.type.isin(["LineString","MultiLineString"])].explode(index_parts=False)
+        # Add roads
+        for geom in gdf_roads.geometry:
+            if geom.geom_type == "LineString":
+                coords = [(x, y) for x, y in geom.coords]
+                msp.add_lwpolyline(coords, dxfattribs={"layer": "ROADS"})
+            elif geom.geom_type == "MultiLineString":
+                for line in geom.geoms:
+                    coords = [(x, y) for x, y in line.coords]
+                    msp.add_lwpolyline(coords, dxfattribs={"layer": "ROADS"})
 
-    roads_utm = roads.to_crs(TARGET_EPSG)
+        # Save DXF
+        out_dxf = "output.dxf"
+        doc.saveas(out_dxf)
 
-    # --- DXF Export
-    doc = ezdxf.new()
-    msp = doc.modelspace()
-    for lname in ["ROADS", "BUILDINGS", "BOUNDARY"]:
-        if lname not in doc.layers:
-            doc.layers.new(name=lname)
+        # Save GeoJSON
+        out_geojson = "output.geojson"
+        gdf_buildings.to_file(out_geojson, driver="GeoJSON")
 
-    # simple boundary
-    boundary_utm = gpd.GeoSeries([boundary_polygon], crs=boundary_crs).to_crs(TARGET_EPSG).iloc[0]
-    if boundary_utm.geom_type == "Polygon":
-        coords = [(x, y) for x,y in boundary_utm.exterior.coords]
-        msp.add_lwpolyline(coords, dxfattribs={"layer":"BOUNDARY"})
+        # Download buttons
+        st.success("✅ Processing done!")
+        with open(out_dxf, "rb") as f:
+            st.download_button("⬇️ Download DXF", f, file_name="output.dxf")
+        with open(out_geojson, "rb") as f:
+            st.download_button("⬇️ Download GeoJSON", f, file_name="output.geojson")
 
-    # buildings
-    for geom in gdf_buildings.geometry:
-        if geom.geom_type == "Polygon":
-            coords = [(x, y) for x,y in geom.exterior.coords]
-            msp.add_lwpolyline(coords, close=True, dxfattribs={"layer":"BUILDINGS"})
-
-    # save dxf to buffer
-    dxf_bytes = BytesIO()
-    doc.saveas(dxf_bytes)
-    dxf_bytes.seek(0)
-
-    # save geojson
-    geojson_bytes = BytesIO()
-    gdf_buildings.to_crs("EPSG:4326").to_file("out.geojson", driver="GeoJSON")
-    with open("out.geojson", "rb") as f:
-        geojson_bytes.write(f.read())
-    geojson_bytes.seek(0)
-
-    # download buttons
-    st.download_button("Download DXF", dxf_bytes, "map.dxf")
-    st.download_button("Download GeoJSON", geojson_bytes, "buildings.geojson")
+    except Exception as e:
+        st.error(f"Error: {e}")
