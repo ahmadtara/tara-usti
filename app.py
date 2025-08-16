@@ -5,7 +5,6 @@ import shapely.wkt
 from shapely.geometry import Polygon, MultiPolygon, mapping
 import shapely.ops as ops
 import osmnx as ox
-import shapely
 import ezdxf
 from io import BytesIO
 import zipfile
@@ -18,10 +17,6 @@ DEFAULT_WIDTH = 10
 MIN_BUILDING_AREA_M2 = 20
 SNAP_GRID_M = 0.2
 CSV_URL = "https://storage.googleapis.com/open-buildings-data/v3/polygons_s2_level_4_gzip/31d_buildings.csv.gz"
-
-# Bounding box Pekanbaru (bisa disesuaikan lebih luas/sempit)
-LAT_MIN, LAT_MAX = 0.48, 0.54
-LON_MIN, LON_MAX = 101.38, 101.48
 
 # -----------------------------
 # 2) Utility functions
@@ -48,35 +43,39 @@ def snap_to_grid(geom, grid_size=SNAP_GRID_M):
     return ops.transform(lambda x, y: (round(x/grid_size)*grid_size, round(y/grid_size)*grid_size), geom)
 
 # -----------------------------
-# 3) Load buildings from GCS (filtered Pekanbaru dengan chunksize)
+# 3) Load buildings with chunk filter (memory friendly)
 # -----------------------------
 @st.cache_data
-def load_buildings():
-    dfs = []
-    chunksize = 50000  # baca 50k rows sekali
-    for chunk in pd.read_csv(CSV_URL, compression="gzip", chunksize=chunksize):
-        if "geometry" not in chunk.columns:
-            continue
+def load_buildings(boundary_gdf):
+    boundary_gdf = boundary_gdf.to_crs("EPSG:4326")
+    boundary = boundary_gdf.unary_union
 
-        # filter bounding box Pekanbaru (pakai kolom lat/lon bawaan)
+    chunksize = 100000  # baca per 100 ribu row
+    chunks = pd.read_csv(CSV_URL, compression="gzip", chunksize=chunksize)
+
+    selected = []
+    minx, miny, maxx, maxy = boundary.bounds
+
+    for i, chunk in enumerate(chunks):
+        # filter by bbox dulu
         mask = (
-            (chunk["latitude"] >= LAT_MIN) & (chunk["latitude"] <= LAT_MAX) &
-            (chunk["longitude"] >= LON_MIN) & (chunk["longitude"] <= LON_MAX)
+            (chunk["latitude"] >= miny) & (chunk["latitude"] <= maxy) &
+            (chunk["longitude"] >= minx) & (chunk["longitude"] <= maxx)
         )
-        chunk = chunk[mask]
-        if len(chunk) == 0:
-            continue
+        if mask.any():
+            filtered = chunk[mask].copy()
+            filtered["geometry"] = filtered["geometry"].apply(shapely.wkt.loads)
+            gdf = gpd.GeoDataFrame(filtered, geometry="geometry", crs="EPSG:4326")
 
-        # parse WKT → shapely geometry
-        chunk["geometry"] = chunk["geometry"].apply(shapely.wkt.loads)
-        dfs.append(chunk)
+            # filter ketat pakai intersects
+            gdf = gdf[gdf.intersects(boundary)]
+            if not gdf.empty:
+                selected.append(gdf)
 
-    if not dfs:
+    if not selected:
         return gpd.GeoDataFrame(columns=["geometry"], geometry="geometry", crs="EPSG:4326")
 
-    df = pd.concat(dfs, ignore_index=True)
-    return gpd.GeoDataFrame(df, geometry="geometry", crs="EPSG:4326")
-
+    return pd.concat(selected, ignore_index=True)
 
 # -----------------------------
 # 4) Streamlit UI
@@ -91,8 +90,6 @@ if boundary_file:
 
     # Load boundary
     gdf_boundary = gpd.read_file(boundary_file)
-
-    # pastikan CRS boundary sama dengan buildings (EPSG:4326)
     if gdf_boundary.crs is None:
         st.warning("Boundary CRS tidak terdeteksi, diasumsikan EPSG:4326")
         gdf_boundary.set_crs("EPSG:4326", inplace=True)
@@ -101,32 +98,25 @@ if boundary_file:
 
     boundary = gdf_boundary.unary_union
 
-    # Load Open Buildings Pekanbaru
-    st.info("Downloading Open Buildings CSV from GCS (filtered Pekanbaru)...")
-    gdf_buildings = load_buildings()
+    # Load buildings from Open Buildings
+    st.info("🔄 Loading buildings data (filtered by boundary)...")
+    gdf_buildings = load_buildings(gdf_boundary)
+    st.write(f"🏠 Buildings after filter: {len(gdf_buildings)}")
 
-    # Debug info
-    st.write("Boundary bounds:", gdf_boundary.total_bounds)
-    st.write("Buildings bounds:", gdf_buildings.total_bounds)
-
-    # Filter buildings inside boundary
-    gdf_filtered = gdf_buildings[gdf_buildings.intersects(boundary)].copy()
-    st.write(f"🏠 Buildings after filter: {len(gdf_filtered)}")
-
-    if len(gdf_filtered) == 0:
+    if len(gdf_buildings) == 0:
         st.error("No buildings found in boundary.")
         st.stop()
 
     # Reproject to target UTM
     gdf_boundary = gdf_boundary.to_crs(TARGET_EPSG)
-    gdf_filtered = gdf_filtered.to_crs(TARGET_EPSG)
+    gdf_buildings = gdf_buildings.to_crs(TARGET_EPSG)
 
     # Bersihkan bangunan kecil
-    gdf_filtered["area"] = gdf_filtered.area
-    gdf_filtered = gdf_filtered[gdf_filtered["area"] > MIN_BUILDING_AREA_M2]
+    gdf_buildings["area"] = gdf_buildings.area
+    gdf_buildings = gdf_buildings[gdf_buildings["area"] > MIN_BUILDING_AREA_M2]
 
     # Snap grid + strip Z
-    gdf_filtered["geometry"] = gdf_filtered["geometry"].apply(strip_z).apply(snap_to_grid)
+    gdf_buildings["geometry"] = gdf_buildings["geometry"].apply(strip_z).apply(snap_to_grid)
 
     # Ambil roads dari OSM
     st.info("Downloading roads from OpenStreetMap...")
@@ -142,7 +132,7 @@ if boundary_file:
     gdf_roads["geometry"] = gdf_roads.apply(lambda row: row.geometry.buffer(row["width"]), axis=1)
 
     # Potong bangunan yg kena jalan
-    buildings_final = gdf_filtered.overlay(gdf_roads, how="difference")
+    buildings_final = gdf_buildings.overlay(gdf_roads, how="difference")
 
     st.success(f"✅ Final buildings count: {len(buildings_final)}")
 
@@ -183,6 +173,3 @@ if boundary_file:
     zip_buffer.seek(0)
 
     st.download_button("⬇️ Download results (GeoJSON + DXF)", data=zip_buffer, file_name="results.zip", mime="application/zip")
-
-
-
