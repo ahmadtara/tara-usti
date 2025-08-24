@@ -1,18 +1,14 @@
 import os
 import zipfile
-import requests
-from fastkml import kml
 import geopandas as gpd
 import streamlit as st
 import ezdxf
-from shapely.geometry import Polygon, MultiPolygon, LineString, MultiLineString, shape
+from shapely.geometry import Polygon, MultiPolygon, LineString, MultiLineString
 from shapely.ops import unary_union, linemerge, polygonize
 import osmnx as ox
-import json
 
 TARGET_EPSG = "EPSG:32760"
 DEFAULT_WIDTH = 10
-#HERE_API_KEY = "k1mDEfR1Q3A_MtLqkxLrhbDcS-1oC4r7WzlgPrcv4Rk"  # <<=== Ganti dengan API Key HERE Maps kamu
 
 def classify_layer(hwy):
     if hwy in ['motorway', 'trunk', 'primary']:
@@ -50,26 +46,6 @@ def get_osm_roads(polygon):
     roads = roads[~roads.geometry.is_empty & roads.geometry.notnull()]
     roads = roads.clip(polygon)
     return roads.reset_index(drop=True)
-
-def get_here_roads(polygon):
-    minx, miny, maxx, maxy = polygon.bounds
-    url = (
-        f"https://vector.hereapi.com/v2/vectortiles/base/mc"
-        f"?apikey={HERE_API_KEY}&bbox={miny},{minx},{maxy},{maxx}&layers=roads"
-    )
-    resp = requests.get(url)
-    if resp.status_code != 200:
-        raise Exception(f"HERE API error: {resp.text}")
-    
-    data = resp.json()
-    features = []
-    for f in data.get("features", []):
-        geom = shape(f["geometry"])
-        if geom.intersects(polygon):
-            features.append({"geometry": geom.intersection(polygon), "properties": f["properties"]})
-    if not features:
-        return gpd.GeoDataFrame()
-    return gpd.GeoDataFrame(features, crs="EPSG:4326")
 
 def strip_z(geom):
     if geom.geom_type == "LineString" and geom.has_z:
@@ -122,9 +98,7 @@ def process_kml_to_dxf(kml_path, output_dir):
     polygon, polygon_crs = extract_polygon_from_kml_or_kmz(kml_path)
     roads = get_osm_roads(polygon)
     if roads.empty:
-        roads = get_here_roads(polygon)
-    if roads.empty:
-        raise Exception("❌ Tidak ada jalan ditemukan (OSM & HERE kosong).")
+        raise Exception("❌ Tidak ada jalan ditemukan di OSM.")
     geojson_path = os.path.join(output_dir, "roadmap.geojson")
     dxf_path = os.path.join(output_dir, "roadmap.dxf")
     roads_utm = roads.to_crs(TARGET_EPSG)
@@ -133,7 +107,7 @@ def process_kml_to_dxf(kml_path, output_dir):
     return dxf_path, geojson_path, True
 
 def run_kml_dxf():
-    st.title("🌍 KML/KMZ → Road Converter (OSM + HERE fallback)")
+    st.title("🌍 KML/KMZ → Road Converter (OSM Only)")
     kml_file = st.file_uploader("Upload file .KML / .KMZ", type=["kml", "kmz"])
     if kml_file:
         with st.spinner("💫 Memproses file..."):
@@ -149,4 +123,3 @@ def run_kml_dxf():
                         st.download_button("⬇️ Download DXF (UTM 60)", data=f, file_name="roadmap.dxf")
             except Exception as e:
                 st.error(f"❌ Terjadi kesalahan: {e}")
-
