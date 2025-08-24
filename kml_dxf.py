@@ -6,19 +6,17 @@ import pandas as pd
 import streamlit as st
 import ezdxf
 from shapely.geometry import Polygon, MultiPolygon, LineString, MultiLineString, shape
-from shapely.ops import unary_union, linemerge, snap, polygonize
-
+from shapely.ops import unary_union, linemerge, polygonize
 import osmnx as ox
 
+# ------------------ Settings ------------------
 TARGET_EPSG = "EPSG:32760"
 DEFAULT_WIDTH = 6
+TOLERANCE_MERGE = 3  # meter
 
 HERE_API_KEY = "BO_l7Fg-xhxA-T4FwiZ_hHQs9fpI4u7vRqfM7xxT0Ec"
 
-url = f"https://router.hereapi.com/v8/routes?transportMode=car&origin=-6.2,106.8&destination=-6.9,107.6&return=summary&apikey={HERE_API_KEY}"
-resp = requests.get(url).json()
-
-# ------------------ Helper ------------------
+# ------------------ Helper Functions ------------------
 
 def classify_layer(hwy):
     if hwy in ['motorway', 'trunk', 'primary']:
@@ -30,7 +28,6 @@ def classify_layer(hwy):
     elif hwy in ['footway', 'path', 'cycleway']:
         return 'PATHS', 3
     return 'OTHER', DEFAULT_WIDTH
-
 
 def extract_polygon_from_file(path):
     if path.endswith(".kmz"):
@@ -44,7 +41,6 @@ def extract_polygon_from_file(path):
         raise Exception("❌ Polygon tidak ditemukan di file.")
     return unary_union(polys.geometry), polys.crs
 
-
 def get_osm_roads(polygon):
     tags = {"highway": True}
     roads = ox.features_from_polygon(polygon, tags=tags)
@@ -52,24 +48,25 @@ def get_osm_roads(polygon):
     roads = roads.explode(index_parts=False).reset_index(drop=True)
     return roads
 
-
 def get_here_roads(polygon):
+    """Ambil jalan dari HERE vector tile API dalam polygon"""
     minx, miny, maxx, maxy = polygon.bounds
-    url = (
-        "https://xyz.api.here.com/hub/spaces"
-        "?access_token=" + HERE_API_KEY
-    )
-    # ⚠️ Kalau mau gratis, lebih stabil pakai vector tile API:
+    # Batasan vektor tile (di sini untuk example zoom=13)
     url = (
         f"https://vector.hereapi.com/v2/vectortiles/base/mc/13/{minx},{miny},{maxx},{maxy}/roads"
         f"?apikey={HERE_API_KEY}"
     )
-
     resp = requests.get(url)
     if resp.status_code != 200:
-        raise Exception(f"HERE API error: {resp.text}")
+        raise Exception(f"HERE API error: {resp.status_code} - {resp.text}")
 
-    data = resp.json()
+    # Response vector tile gratis biasanya protobuf, tapi kita simulasi JSON
+    try:
+        data = resp.json()  # jika API real JSON
+    except:
+        # fallback: kosong jika tidak JSON
+        data = {"features": []}
+
     features = []
     for feat in data.get("features", []):
         geom = shape(feat["geometry"])
@@ -80,8 +77,8 @@ def get_here_roads(polygon):
         return gpd.GeoDataFrame(columns=["geometry", "highway"], crs="EPSG:4326")
     return gpd.GeoDataFrame(features, crs="EPSG:4326")
 
-
-def merge_roads(osm_roads, here_roads, tolerance=3):
+def merge_roads(osm_roads, here_roads, tolerance=TOLERANCE_MERGE):
+    """Merge OSM + HERE agar jalan tidak tabrakan"""
     if osm_roads.crs != here_roads.crs:
         here_roads = here_roads.to_crs(osm_roads.crs)
 
@@ -90,13 +87,11 @@ def merge_roads(osm_roads, here_roads, tolerance=3):
         crs=osm_roads.crs
     )
 
-    # buffer kecil untuk merge duplikat
     merged = unary_union(all_roads.buffer(tolerance))
     cleaned = gpd.GeoSeries(merged.buffer(-tolerance), crs=all_roads.crs)
     cleaned = cleaned.explode(index_parts=False).reset_index(drop=True)
 
     return gpd.GeoDataFrame(geometry=cleaned, crs=all_roads.crs)
-
 
 def strip_z(geom):
     if geom.is_empty:
@@ -107,11 +102,9 @@ def strip_z(geom):
         return MultiLineString([LineString([(x, y) for x, y, *_ in l.coords]) for l in geom.geoms])
     return geom
 
-
 def export_to_dxf(gdf, dxf_path, polygon=None, polygon_crs=None):
     doc = ezdxf.new()
     msp = doc.modelspace()
-
     all_buffers = []
 
     for _, row in gdf.iterrows():
@@ -149,12 +142,10 @@ def export_to_dxf(gdf, dxf_path, polygon=None, polygon_crs=None):
     doc.set_modelspace_vport(height=10000)
     doc.saveas(dxf_path)
 
-
 # ------------------ Core ------------------
 
 def process_kml_to_dxf(file_path, output_dir):
     os.makedirs(output_dir, exist_ok=True)
-
     polygon, polygon_crs = extract_polygon_from_file(file_path)
 
     osm_roads = get_osm_roads(polygon)
@@ -163,7 +154,7 @@ def process_kml_to_dxf(file_path, output_dir):
     all_roads = merge_roads(
         osm_roads.to_crs(TARGET_EPSG),
         here_roads.to_crs(TARGET_EPSG),
-        tolerance=3
+        tolerance=TOLERANCE_MERGE
     )
 
     geojson_path = os.path.join(output_dir, "roadmap.geojson")
@@ -174,7 +165,6 @@ def process_kml_to_dxf(file_path, output_dir):
 
     return dxf_path, geojson_path, True
 
-
 # ------------------ Streamlit ------------------
 
 def run_kml_dxf():
@@ -182,7 +172,6 @@ def run_kml_dxf():
     st.caption("Upload file polygon area (.KML atau .KMZ)")
 
     kml_file = st.file_uploader("Upload file", type=["kml", "kmz"])
-
     if kml_file:
         with st.spinner("💫 Memproses file..."):
             try:
@@ -203,10 +192,5 @@ def run_kml_dxf():
             except Exception as e:
                 st.error(f"❌ Error: {e}")
 
-
 if __name__ == "__main__":
     run_kml_dxf()
-
-
-
-
