@@ -99,6 +99,7 @@ def strip_z(geom):
     return geom
 
 def export_to_dxf(gdf, dxf_path, polygon=None, polygon_crs=None):
+    """Export GeoDataFrame ke DXF, aman untuk semua tipe geometrinya"""
     doc = ezdxf.new()
     msp = doc.modelspace()
     all_buffers = []
@@ -107,8 +108,21 @@ def export_to_dxf(gdf, dxf_path, polygon=None, polygon_crs=None):
         geom = strip_z(row.geometry)
         if geom.is_empty or not geom.is_valid:
             continue
+
+        # Jika Polygon/MultiPolygon, ambil boundary saja
+        if geom.geom_type in ["Polygon", "MultiPolygon"]:
+            geom = geom.boundary
+
+        # Hanya lanjutkan jika geom sekarang LineString/MultiLineString
+        if geom.geom_type not in ["LineString", "MultiLineString"]:
+            continue
+
         layer, width = classify_layer(str(row.get("highway", "")))
-        merged = linemerge(geom) if not isinstance(geom, LineString) else geom
+
+        # Linemerge untuk MultiLineString
+        merged = linemerge(geom) if geom.geom_type != "LineString" else geom
+
+        # Buffer jalan untuk ketebalan
         buffered = merged.buffer(width / 2, resolution=6, join_style=2)
         all_buffers.append(buffered)
 
@@ -118,25 +132,26 @@ def export_to_dxf(gdf, dxf_path, polygon=None, polygon_crs=None):
     all_union = unary_union(all_buffers)
     outlines = list(polygonize(all_union.boundary))
 
+    # Hitung offset agar koordinat DXF dimulai dari 0,0
     bounds = [(x, y) for geom in outlines for x, y in geom.exterior.coords]
     min_x, min_y = min(x for x, y in bounds), min(y for x, y in bounds)
 
+    # Tambahkan outlines ke DXF
     for outline in outlines:
         coords = [(x - min_x, y - min_y) for x, y in outline.exterior.coords]
         msp.add_lwpolyline(coords, dxfattribs={"layer": "ROADS"})
 
+    # Tambahkan polygon boundary jika ada
     if polygon is not None and polygon_crs is not None:
         poly = gpd.GeoSeries([polygon], crs=polygon_crs).to_crs(TARGET_EPSG).iloc[0]
-        if poly.geom_type == 'Polygon':
-            coords = [(x - min_x, y - min_y) for x, y in poly.exterior.coords]
+        polygons = [poly] if poly.geom_type == 'Polygon' else poly.geoms
+        for p in polygons:
+            coords = [(x - min_x, y - min_y) for x, y in p.exterior.coords]
             msp.add_lwpolyline(coords, dxfattribs={"layer": "BOUNDARY"})
-        elif poly.geom_type == 'MultiPolygon':
-            for p in poly.geoms:
-                coords = [(x - min_x, y - min_y) for x, y in p.exterior.coords]
-                msp.add_lwpolyline(coords, dxfattribs={"layer": "BOUNDARY"})
 
     doc.set_modelspace_vport(height=10000)
     doc.saveas(dxf_path)
+
 
 # ------------------ Core ------------------
 
@@ -202,3 +217,4 @@ def run_kml_dxf():
 
 if __name__ == "__main__":
     run_kml_dxf()
+
