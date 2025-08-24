@@ -12,7 +12,11 @@ import osmnx as ox
 
 TARGET_EPSG = "EPSG:32760"
 DEFAULT_WIDTH = 6
-HERE_API_KEY = "iWCrFicKYt9_AOCtg76h76MlqZkVTn94eHbBl_cE8m0"
+
+HERE_API_KEY = "BO_l7Fg-xhxA-T4FwiZ_hHQs9fpI4u7vRqfM7xxT0Ec"
+
+url = f"https://router.hereapi.com/v8/routes?transportMode=car&origin=-6.2,106.8&destination=-6.9,107.6&return=summary&apikey={HERE_API_KEY}"
+resp = requests.get(url).json()
 
 # ------------------ Helper ------------------
 
@@ -52,18 +56,26 @@ def get_osm_roads(polygon):
 def get_here_roads(polygon):
     minx, miny, maxx, maxy = polygon.bounds
     url = (
-        "https://fleet.ls.hereapi.com/2/search/proximity.json"
-        f"?apikey={HERE_API_KEY}&corridor={miny},{minx};{maxy},{maxx};200"
-        "&layer=LINK_FCn"
+        "https://xyz.api.here.com/hub/spaces"
+        "?access_token=" + HERE_API_KEY
     )
+    # ⚠️ Kalau mau gratis, lebih stabil pakai vector tile API:
+    url = (
+        f"https://vector.hereapi.com/v2/vectortiles/base/mc/13/{minx},{miny},{maxx},{maxy}/roads"
+        f"?apikey={HERE_API_KEY}"
+    )
+
     resp = requests.get(url)
     if resp.status_code != 200:
-        raise Exception("HERE API error")
+        raise Exception(f"HERE API error: {resp.text}")
+
     data = resp.json()
     features = []
-    for feat in data.get("geometries", []):
+    for feat in data.get("features", []):
         geom = shape(feat["geometry"])
-        features.append({"geometry": geom, "highway": feat.get("properties", {}).get("functionalClass", "other")})
+        road_type = feat.get("properties", {}).get("roadCategory", "other")
+        features.append({"geometry": geom, "highway": road_type})
+
     if not features:
         return gpd.GeoDataFrame(columns=["geometry", "highway"], crs="EPSG:4326")
     return gpd.GeoDataFrame(features, crs="EPSG:4326")
@@ -194,6 +206,7 @@ def run_kml_dxf():
 
 if __name__ == "__main__":
     run_kml_dxf()
+
 
 
 
