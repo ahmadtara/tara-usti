@@ -12,7 +12,7 @@ import osmnx as ox
 
 TARGET_EPSG = "EPSG:32760"
 DEFAULT_WIDTH = 6
-HERE_API_KEY = os.getenv("iWCrFicKYt9_AOCtg76h76MlqZkVTn94eHbBl_cE8m0")  # atur API key kamu di env
+HERE_API_KEY = st.secrets["HERE_API_KEY"]
 
 # ------------------ Helper ------------------
 
@@ -194,4 +194,5 @@ def run_kml_dxf():
 
 if __name__ == "__main__":
     run_kml_dxf()
+
 
