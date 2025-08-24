@@ -94,8 +94,12 @@ def strip_z(geom):
     if geom.geom_type == "LineString":
         return LineString([(coord[0], coord[1]) for coord in geom.coords])
     if geom.geom_type == "MultiLineString":
-        return MultiLineString([LineString([(coord[0], coord[1]) for coord in line.coords]) for line in geom.geoms])
+        return MultiLineString([
+            LineString([(coord[0], coord[1]) for coord in line.coords])
+            for line in geom.geoms
+        ])
     return geom
+
 
 
 # ------------------ DXF Export ------------------
@@ -200,4 +204,5 @@ def run_kml_dxf():
 
 if __name__ == "__main__":
     run_kml_dxf()
+
 
