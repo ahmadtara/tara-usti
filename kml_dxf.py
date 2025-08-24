@@ -31,14 +31,23 @@ def classify_layer(hwy):
 def extract_polygon_from_file(path):
     if path.endswith(".kmz"):
         with zipfile.ZipFile(path, 'r') as z:
-            kml_name = [f for f in z.namelist() if f.endswith(".kml")][0]
+            kml_name = [f for f in z.namelist() if f.endswith(".kml")]
+            if not kml_name:
+                raise Exception("❌ File KMZ tidak mengandung KML.")
+            kml_name = kml_name[0]
             z.extract(kml_name, "/tmp")
             path = os.path.join("/tmp", kml_name)
+
     gdf = gpd.read_file(path)
+
+    # Pastikan ada Polygon / MultiPolygon
     polys = gdf[gdf.geometry.type.isin(["Polygon", "MultiPolygon"])]
     if polys.empty:
-        raise Exception("❌ Polygon tidak ditemukan di file.")
-    return unary_union(polys.geometry), polys.crs
+        raise Exception("❌ File tidak mengandung Polygon/MultiPolygon. Tidak bisa diproses.")
+
+    polygon = unary_union(polys.geometry)
+    return polygon, gdf.crs
+
 
 
 def get_osm_roads(polygon):
@@ -206,3 +215,4 @@ def run_kml_dxf():
 
 if __name__ == "__main__":
     run_kml_dxf()
+
