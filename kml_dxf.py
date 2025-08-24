@@ -87,13 +87,16 @@ def merge_roads(osm_roads, here_roads, tolerance=3):
     return gpd.GeoDataFrame(geometry=cleaned, crs=all_roads.crs)
 
 def strip_z(geom):
+    """Hapus dimensi Z jika ada, aman untuk semua LineString / MultiLineString"""
     if geom.is_empty:
         return geom
+
     if geom.geom_type == "LineString":
-        return LineString([(x, y) for x, y, *_ in geom.coords])
+        return LineString([(coord[0], coord[1]) for coord in geom.coords])
     if geom.geom_type == "MultiLineString":
-        return MultiLineString([LineString([(x, y) for x, y, *_ in l.coords]) for l in geom.geoms])
+        return MultiLineString([LineString([(coord[0], coord[1]) for coord in line.coords]) for line in geom.geoms])
     return geom
+
 
 # ------------------ DXF Export ------------------
 
@@ -197,3 +200,4 @@ def run_kml_dxf():
 
 if __name__ == "__main__":
     run_kml_dxf()
+
