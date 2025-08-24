@@ -21,7 +21,7 @@ def classify_layer(hwy):
         return 'PATHS', 4
     return 'OTHER', DEFAULT_WIDTH
 
-def extract_polygon_from_kml_or_kmz(path):
+def extract_polygon_from_kml_or_kmz(path, target_folder="BONDREY"):
     if path.endswith(".kmz"):
         with zipfile.ZipFile(path, "r") as z:
             for name in z.namelist():
@@ -29,10 +29,24 @@ def extract_polygon_from_kml_or_kmz(path):
                     z.extract(name, "/tmp")
                     path = os.path.join("/tmp", name)
                     break
+
     gdf = gpd.read_file(path)
+
+    # Debug: tampilkan kolom untuk cek isi folder
+    print("Kolom tersedia:", gdf.columns)
+
+    # --- Filter hanya berdasarkan folder/Name ---
+    if "Name" in gdf.columns:
+        gdf = gdf[gdf["Name"].str.contains(target_folder, case=False, na=False)]
+    elif "FolderPath" in gdf.columns:
+        gdf = gdf[gdf["FolderPath"].str.contains(target_folder, case=False, na=False)]
+    elif "Description" in gdf.columns:
+        gdf = gdf[gdf["Description"].str.contains(target_folder, case=False, na=False)]
+
     polygons = gdf[gdf.geometry.type.isin(["Polygon", "MultiPolygon"])]
     if polygons.empty:
-        raise Exception("❌ No Polygon found in KML/KMZ")
+        raise Exception(f"❌ Tidak ada Polygon dari folder {target_folder} di KML/KMZ")
+
     return unary_union(polygons.geometry), polygons.crs
 
 def get_osm_roads(polygon):
@@ -93,9 +107,9 @@ def export_to_dxf(gdf, dxf_path, polygon=None, polygon_crs=None):
     doc.set_modelspace_vport(height=10000)
     doc.saveas(dxf_path)
 
-def process_kml_to_dxf(kml_path, output_dir):
+def process_kml_to_dxf(kml_path, output_dir, target_folder="BONDREY"):
     os.makedirs(output_dir, exist_ok=True)
-    polygon, polygon_crs = extract_polygon_from_kml_or_kmz(kml_path)
+    polygon, polygon_crs = extract_polygon_from_kml_or_kmz(kml_path, target_folder=target_folder)
     roads = get_osm_roads(polygon)
     if roads.empty:
         raise Exception("❌ Tidak ada jalan ditemukan di OSM.")
@@ -109,6 +123,7 @@ def process_kml_to_dxf(kml_path, output_dir):
 def run_kml_dxf():
     st.title("🌍 KML/KMZ → Road Converter (OSM Only)")
     kml_file = st.file_uploader("Upload file .KML / .KMZ", type=["kml", "kmz"])
+    target_folder = st.text_input("Folder name dalam KMZ (contoh: BONDREY)", "BONDREY")
     if kml_file:
         with st.spinner("💫 Memproses file..."):
             try:
@@ -116,7 +131,7 @@ def run_kml_dxf():
                 with open(temp_input, "wb") as f:
                     f.write(kml_file.read())
                 output_dir = "/tmp/output"
-                dxf_path, geojson_path, ok = process_kml_to_dxf(temp_input, output_dir)
+                dxf_path, geojson_path, ok = process_kml_to_dxf(temp_input, output_dir, target_folder=target_folder)
                 if ok:
                     st.success("✅ Berhasil diekspor ke DXF!")
                     with open(dxf_path, "rb") as f:
