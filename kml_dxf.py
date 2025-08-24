@@ -11,10 +11,10 @@ import osmnx as ox
 
 TARGET_EPSG = "EPSG:32760"
 DEFAULT_WIDTH = 6
-
 HERE_API_KEY = "BO_l7Fg-xhxA-T4FwiZ_hHQs9fpI4u7vRqfM7xxT0Ec"
 
-# ------------------ Helper Functions ------------------
+
+# ------------------ Helper ------------------
 
 def classify_layer(hwy):
     if hwy in ['motorway', 'trunk', 'primary']:
@@ -26,6 +26,7 @@ def classify_layer(hwy):
     elif hwy in ['footway', 'path', 'cycleway']:
         return 'PATHS', 3
     return 'OTHER', DEFAULT_WIDTH
+
 
 def extract_polygon_from_file(path):
     if path.endswith(".kmz"):
@@ -39,6 +40,7 @@ def extract_polygon_from_file(path):
         raise Exception("❌ Polygon tidak ditemukan di file.")
     return unary_union(polys.geometry), polys.crs
 
+
 def get_osm_roads(polygon):
     tags = {"highway": True}
     roads = ox.features_from_polygon(polygon, tags=tags)
@@ -46,9 +48,9 @@ def get_osm_roads(polygon):
     roads = roads.explode(index_parts=False).reset_index(drop=True)
     return roads
 
+
 def get_here_roads(polygon):
     minx, miny, maxx, maxy = polygon.bounds
-    # Gunakan HERE vector tile gratis
     url = (
         f"https://vector.hereapi.com/v2/vectortiles/base/mc/13/{minx},{miny},{maxx},{maxy}/roads"
         f"?apikey={HERE_API_KEY}"
@@ -56,35 +58,35 @@ def get_here_roads(polygon):
     resp = requests.get(url)
     if resp.status_code != 200:
         return gpd.GeoDataFrame(columns=["geometry", "highway"], crs="EPSG:4326")
+
     data = resp.json()
     features = []
     for feat in data.get("features", []):
         geom = shape(feat["geometry"])
         road_type = feat.get("properties", {}).get("roadCategory", "other")
         features.append({"geometry": geom, "highway": road_type})
-    if not features:
-        return gpd.GeoDataFrame(columns=["geometry", "highway"], crs="EPSG:4326")
-    return gpd.GeoDataFrame(features, crs="EPSG:4326")
+
+    return gpd.GeoDataFrame(features, crs="EPSG:4326") if features else gpd.GeoDataFrame(columns=["geometry", "highway"], crs="EPSG:4326")
+
 
 def merge_roads(osm_roads, here_roads, tolerance=3):
+    # Hanya pakai jalan HERE yang belum ada di OSM
     if osm_roads.crs != here_roads.crs:
         here_roads = here_roads.to_crs(osm_roads.crs)
 
-    # Tambahkan hanya jalan HERE yang belum ada di OSM
-    osm_buffer = unary_union(osm_roads.buffer(tolerance))
-    here_only = here_roads[here_roads.geometry.apply(lambda g: g.intersects(osm_buffer) == False)]
+    # Spatial difference: HERE - OSM
+    here_only = gpd.overlay(here_roads, osm_roads, how='difference')
 
-    all_roads = gpd.GeoDataFrame(
-        pd.concat([osm_roads, here_only], ignore_index=True),
-        crs=osm_roads.crs
-    )
+    all_roads = pd.concat([osm_roads, here_only], ignore_index=True)
+    all_roads = gpd.GeoDataFrame(all_roads, crs=osm_roads.crs)
 
-    # Buffer untuk merge
+    # Buffer dan merge
     merged = unary_union(all_roads.buffer(tolerance))
     cleaned = gpd.GeoSeries(merged.buffer(-tolerance), crs=all_roads.crs)
     cleaned = cleaned.explode(index_parts=False).reset_index(drop=True)
 
     return gpd.GeoDataFrame(geometry=cleaned, crs=all_roads.crs)
+
 
 def strip_z(geom):
     """Hapus dimensi Z jika ada, aman untuk semua LineString / MultiLineString"""
@@ -92,17 +94,11 @@ def strip_z(geom):
         return geom
 
     if geom.geom_type == "LineString":
-        return LineString([(coord[0], coord[1]) for coord in geom.coords])
+        return LineString([(c[0], c[1]) for c in geom.coords])
     if geom.geom_type == "MultiLineString":
-        return MultiLineString([
-            LineString([(coord[0], coord[1]) for coord in line.coords])
-            for line in geom.geoms
-        ])
+        return MultiLineString([LineString([(c[0], c[1]) for c in line.coords]) for line in geom.geoms])
     return geom
 
-
-
-# ------------------ DXF Export ------------------
 
 def export_to_dxf(gdf, dxf_path, polygon=None, polygon_crs=None):
     doc = ezdxf.new()
@@ -110,20 +106,17 @@ def export_to_dxf(gdf, dxf_path, polygon=None, polygon_crs=None):
     all_buffers = []
 
     for _, row in gdf.iterrows():
-        geom = strip_z(row.geometry)
+        geom = row.geometry
         if geom.is_empty or not geom.is_valid:
             continue
 
-        # Polygon -> LineString
+        # Jika Polygon, ambil boundary
         if geom.geom_type == "Polygon":
-            geom = LineString(geom.exterior.coords)
+            geom = LineString([(c[0], c[1]) for c in geom.exterior.coords])
         elif geom.geom_type == "MultiPolygon":
-            lines = [LineString(p.exterior.coords) for p in geom.geoms]
-            geom = MultiLineString(lines)
+            geom = MultiLineString([LineString([(c[0], c[1]) for c in p.exterior.coords]) for p in geom.geoms])
 
-        if geom.geom_type not in ["LineString", "MultiLineString"]:
-            continue
-
+        geom = strip_z(geom)
         layer, width = classify_layer(str(row.get("highway", "")))
         merged = linemerge(geom) if geom.geom_type != "LineString" else geom
         buffered = merged.buffer(width / 2, resolution=6, join_style=2)
@@ -134,6 +127,8 @@ def export_to_dxf(gdf, dxf_path, polygon=None, polygon_crs=None):
 
     all_union = unary_union(all_buffers)
     outlines = list(polygonize(all_union.boundary))
+
+    # Normalisasi koordinat ke 0,0
     bounds = [(x, y) for geom in outlines for x, y in geom.exterior.coords]
     min_x, min_y = min(x for x, y in bounds), min(y for x, y in bounds)
 
@@ -141,23 +136,27 @@ def export_to_dxf(gdf, dxf_path, polygon=None, polygon_crs=None):
         coords = [(x - min_x, y - min_y) for x, y in outline.exterior.coords]
         msp.add_lwpolyline(coords, dxfattribs={"layer": "ROADS"})
 
-    # Boundary polygon
+    # Polygon boundary
     if polygon is not None and polygon_crs is not None:
         poly = gpd.GeoSeries([polygon], crs=polygon_crs).to_crs(TARGET_EPSG).iloc[0]
-        polygons = [poly] if poly.geom_type == 'Polygon' else poly.geoms
-        for p in polygons:
-            coords = [(x - min_x, y - min_y) for x, y in p.exterior.coords]
+        if poly.geom_type == 'Polygon':
+            coords = [(c[0]-min_x, c[1]-min_y) for c in poly.exterior.coords]
             msp.add_lwpolyline(coords, dxfattribs={"layer": "BOUNDARY"})
+        elif poly.geom_type == 'MultiPolygon':
+            for p in poly.geoms:
+                coords = [(c[0]-min_x, c[1]-min_y) for c in p.exterior.coords]
+                msp.add_lwpolyline(coords, dxfattribs={"layer": "BOUNDARY"})
 
     doc.set_modelspace_vport(height=10000)
     doc.saveas(dxf_path)
 
-# ------------------ Core Processing ------------------
+
+# ------------------ Core ------------------
 
 def process_kml_to_dxf(file_path, output_dir):
     os.makedirs(output_dir, exist_ok=True)
-    polygon, polygon_crs = extract_polygon_from_file(file_path)
 
+    polygon, polygon_crs = extract_polygon_from_file(file_path)
     osm_roads = get_osm_roads(polygon)
     here_roads = get_here_roads(polygon)
 
@@ -175,13 +174,15 @@ def process_kml_to_dxf(file_path, output_dir):
 
     return dxf_path, geojson_path, True
 
-# ------------------ Streamlit UI ------------------
+
+# ------------------ Streamlit ------------------
 
 def run_kml_dxf():
-    st.title("🌍 KML/KMZ → Road Converter (OSM + HERE Fallback)")
+    st.title("🌍 KML/KMZ → Road Converter (OSM + HERE)")
     st.caption("Upload file polygon area (.KML atau .KMZ)")
 
     kml_file = st.file_uploader("Upload file", type=["kml", "kmz"])
+
     if kml_file:
         with st.spinner("💫 Memproses file..."):
             try:
@@ -202,7 +203,6 @@ def run_kml_dxf():
             except Exception as e:
                 st.error(f"❌ Error: {e}")
 
+
 if __name__ == "__main__":
     run_kml_dxf()
-
-
