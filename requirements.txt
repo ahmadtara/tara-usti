@@ -14,3 +14,5 @@ fiona
 gdown
 mercantile
 mapbox-vector-tile
+opencv-python-headless
+numpy
