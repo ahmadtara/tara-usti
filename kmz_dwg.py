@@ -199,7 +199,7 @@ def draw_to_template(classified, template_path):
                 msp.add_text(obj["name"], dxfattribs={
                     "height": 6.0,
                     "layer": "FEATURE_LABEL",
-                    "color": 2,
+                    "color": 7,
                     "insert": (x - 2.2, y - 0.9),
                     "rotation": 0
                 })
@@ -304,5 +304,6 @@ def run_kmz_to_dwg():
                         st.download_button("⬇️ Download DXF", f, file_name="output_from_kmz.dxf")
             except Exception as e:
                 st.error(f"❌ Gagal memproses: {e}")
+
 
 
