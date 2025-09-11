@@ -1,75 +1,106 @@
-import cv2
-import numpy as np
-import ezdxf
 import streamlit as st
-from shapely.geometry import Polygon
+import threading
+import requests
 
-st.set_page_config(page_title="Deteksi Atap Presisi → DXF", layout="wide")
+# -------------- ✅ KONFIGURASI ---------------- #
+TELEGRAM_TOKEN = "7656007924:AAGi1it2M7jE0Sen28myiPhEmYPd1-jsI_Q"
+TELEGRAM_CHAT_ID = "6122753506"
+HERE_API_KEY = "iWCrFicKYt9_AOCtg76h76MlqZkVTn94eHbBl_cE8m0"
 
-uploaded_file = st.file_uploader("Upload Gambar Satelit", type=["jpg", "png", "jpeg"])
+BOT_API_URL = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}"
 
-if uploaded_file:
-    # === 1. Baca gambar ===
-    file_bytes = np.asarray(bytearray(uploaded_file.read()), dtype=np.uint8)
-    img = cv2.imdecode(file_bytes, cv2.IMREAD_COLOR)
-    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-    gray = cv2.equalizeHist(gray)
+st.set_page_config(page_title="MyRepublic Toolkit", layout="wide")
 
-    # === 2. Threshold + edge detection ===
-    thresh = cv2.adaptiveThreshold(
-        gray, 255, cv2.ADAPTIVE_THRESH_MEAN_C,
-        cv2.THRESH_BINARY_INV, 15, 5
-    )
-    edges = cv2.Canny(gray, 50, 150)
+# -------------- ✅ USER LOGIN ---------------- #
+valid_users = {
+    "obi": "obi0220",
+    "obi": "obi",
+    "rizky": "12345"
+}
+blocked_users = set()
 
-    # Gabungkan hasil threshold & edges
-    combined = cv2.bitwise_or(thresh, edges)
+# -------------- ✅ TELEGRAM ---------------- #
+def send_telegram(message):
+    try:
+        requests.post(f"{BOT_API_URL}/sendMessage", data={"chat_id": TELEGRAM_CHAT_ID, "text": message})
+    except:
+        pass
 
-    # === 3. Morphology untuk pisahkan atap ===
-    kernel = np.ones((3, 3), np.uint8)
-    morph = cv2.morphologyEx(combined, cv2.MORPH_CLOSE, kernel, iterations=2)
-    morph = cv2.morphologyEx(morph, cv2.MORPH_OPEN, kernel, iterations=1)
+# -------------- ✅ PANTAU PESAN BOT ---------------- #
+def monitor_telegram():
+    offset = None
+    while True:
+        try:
+            resp = requests.get(f"{BOT_API_URL}/getUpdates", params={"timeout": 10, "offset": offset})
+            data = resp.json()
+            for update in data.get("result", []):
+                offset = update["update_id"] + 1
+                msg = update.get("message", {}).get("text", "")
+                if msg.startswith("/add "):
+                    _, uname, pw = msg.strip().split(maxsplit=2)
+                    valid_users[uname] = pw
+                    send_telegram(f"✅ Akun '{uname}' berhasil ditambahkan.")
+                elif msg.startswith("/block "):
+                    uname = msg.strip().split()[1]
+                    blocked_users.add(uname)
+                    send_telegram(f"⛔ Akun '{uname}' telah diblokir.")
+        except:
+            continue
 
-    # === 4. Distance transform untuk watershed ===
-    dist = cv2.distanceTransform(morph, cv2.DIST_L2, 5)
-    _, sure_fg = cv2.threshold(dist, 0.3 * dist.max(), 255, 0)
-    sure_fg = np.uint8(sure_fg)
-    unknown = cv2.subtract(morph, sure_fg)
+# -------------- ✅ THREAD BACKGROUND ---------------- #
+threading.Thread(target=monitor_telegram, daemon=True).start()
 
-    # Marker
-    _, markers = cv2.connectedComponents(sure_fg)
-    markers = markers + 1
-    markers[unknown == 255] = 0
+# -------------- ✅ LOGIN FORM ---------------- #
+def login_page():
+    st.image("https://upload.wikimedia.org/wikipedia/commons/thumb/4/43/MyRepublic_NEW_LOGO_%28September_2023%29_Logo_MyRepublic_Horizontal_-_Black_%281%29.png/960px-MyRepublic_NEW_LOGO_%28September_2023%29_Logo_MyRepublic_Horizontal_-_Black_%281%29.png", width=300)
+    st.markdown("## 🔐 Login to Teknologia ⚡")
 
-    # Watershed
-    img_ws = img.copy()
-    markers = cv2.watershed(img_ws, markers)
+    username = st.text_input("Username")
+    password = st.text_input("Password", type="password")
 
-    # === 5. Cari kontur ===
-    contours, _ = cv2.findContours(morph, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    if st.button("Login"):
+        if username in blocked_users:
+            st.error("⛔ Akun ini telah diblokir.")
+        elif username in valid_users and password == valid_users[username]:
+            st.session_state["logged_in"] = True
+            st.session_state["user"] = username
+            send_telegram(f"✅ Login berhasil: {username}")
+            st.rerun()
+        else:
+            st.error("❌ Username atau Password salah!")
 
-    # === 6. Simpan ke DXF ===
-    doc = ezdxf.new()
-    msp = doc.modelspace()
-    count = 0
+# -------------- ✅ PANGGIL MODUL FUNGSIONALITAS ---------------- #
+from from_hpdb import run_hpdb
+from kml_dxf import run_kml_dxf
+from kmz_dwg import run_kmz_to_dwg  # ✅ Tambahkan ini
+from kmz_vs import run_kmz_vs_hpdb  # ✅ Tambahkan ini
 
-    for cnt in contours:
-        if cv2.contourArea(cnt) > 80:  # area minimum supaya noise hilang
-            approx = cv2.approxPolyDP(cnt, 1.5, True)  # lebih detail
-            pts = [(float(p[0][0]), float(p[0][1])) for p in approx]
-            if len(pts) > 2:
-                poly = Polygon(pts)
-                if poly.is_valid:
-                    msp.add_lwpolyline(pts, close=True)
-                    count += 1
+# -------------- ✅ APLIKASI UTAMA ---------------- #
+if "logged_in" not in st.session_state:
+    st.session_state["logged_in"] = False
+    st.session_state["user"] = None
 
-    dxf_path = "atap_presisi.dxf"
-    doc.saveas(dxf_path)
+if not st.session_state["logged_in"]:
+    login_page()
+else:
+    menu = st.sidebar.radio("📌 Menu", [
+        "KMZ → HPDB",
+        "KML → Jalan",
+        "KMZ → DWG",  # ✅ Tambahkan menu baru
+        "Checker KMZ vs HPDB",  # ✅ Tambahan menu baru
+        "Logout"
+    ])
+    st.sidebar.markdown(f"👤 Logged in as: **{st.session_state['user']}**")
 
-    st.success(f"DXF berhasil dibuat! Total atap terdeteksi: {count} 🎉")
-    st.download_button("Download DXF", data=open(dxf_path, "rb").read(), file_name="atap_presisi.dxf")
-
-    # === 7. Preview hasil ===
-    preview = img.copy()
-    cv2.drawContours(preview, contours, -1, (0, 255, 0), 1)
-    st.image(preview, caption="Hasil Deteksi Atap Presisi")
+    if menu == "KMZ → HPDB":
+        run_hpdb(HERE_API_KEY)
+    elif menu == "KML → Jalan":
+        run_kml_dxf()
+    elif menu == "KMZ → DWG":
+        run_kmz_to_dwg()
+    elif menu == "Checker KMZ vs HPDB":
+        run_kmz_vs_hpdb()
+    elif menu == "Logout":
+        st.session_state["logged_in"] = False
+        st.session_state["user"] = None
+        st.rerun()
