@@ -4,6 +4,8 @@ import os
 from xml.etree import ElementTree as ET
 import ezdxf
 from pyproj import Transformer
+import math
+from shapely.geometry import Point, LineString
 
 transformer = Transformer.from_crs("EPSG:4326", "EPSG:32760", always_xy=True)
 
@@ -119,6 +121,27 @@ def classify_items(items):
             classified["POLE"].append(it)
     return classified
 
+
+def segment_angle(p1, p2):
+    """Hitung sudut rotasi (derajat) antara dua titik garis"""
+    dx = p2[0] - p1[0]
+    dy = p2[1] - p1[1]
+    return math.degrees(math.atan2(dy, dx))
+
+def longest_segment_angle(coords):
+    """Cari sudut dari segmen terpanjang dalam polyline"""
+    max_len = 0
+    angle = 0
+    for i in range(len(coords) - 1):
+        x1, y1 = coords[i]
+        x2, y2 = coords[i + 1]
+        seg_len = math.hypot(x2 - x1, y2 - y1)
+        if seg_len > max_len:
+            max_len = seg_len
+            angle = segment_angle((x1, y1), (x2, y2))
+    return angle
+
+
 def draw_to_template(classified, template_path):
     doc = ezdxf.readfile(template_path)
     msp = doc.modelspace()
@@ -144,6 +167,7 @@ def draw_to_template(classified, template_path):
             elif name.startswith("A$"):
                 matchblock_pole = e.dxf
 
+    # --- Kumpulkan semua koordinat ---
     all_xy = []
     for layer_name, cat_items in classified.items():
         for obj in cat_items:
@@ -176,35 +200,61 @@ def draw_to_template(classified, template_path):
         "JALAN": "JALAN"
     }
 
+    # --- Simpan semua polyline GARIS HOMEPASS ---
+    homepass_lines = []
+    for obj in classified.get("KOTAK", []):
+        if obj['type'] == 'path' and len(obj['xy_path']) >= 2:
+            homepass_lines.append(LineString(obj['xy_path']))
+
+    # --- Gambar objek ---
     for layer_name, cat_items in classified.items():
         true_layer = layer_mapping.get(layer_name, layer_name)
         for obj in cat_items:
             if obj['type'] != 'point':
-                msp.add_lwpolyline(obj['xy_path'], dxfattribs={"layer": true_layer})
+                # hanya tambahkan polyline kalau jumlah titik >= 2
+                if len(obj['xy_path']) >= 2:
+                    msp.add_lwpolyline(obj['xy_path'], dxfattribs={"layer": true_layer})
+                elif len(obj['xy_path']) == 1:
+                    msp.add_circle(center=obj['xy_path'][0], radius=0.5, dxfattribs={"layer": true_layer})
                 continue
 
             x, y = obj['xy']
 
+            # --- HP COVER ---
             if layer_name == "HP_COVER":
+                rotation = 0.0
+                if homepass_lines:
+                    hp_point = Point(x, y)
+                    nearest_line = min(homepass_lines, key=lambda l: l.distance(hp_point))
+                    rotation = longest_segment_angle(list(nearest_line.coords))
+
                 msp.add_text(obj["name"], dxfattribs={
-                    "height": 6.0,
+                    "height": 6,
                     "layer": "FEATURE_LABEL",
                     "color": 6,
-                    "insert": (x - 2.2, y - 0.9),
-                    "rotation": 0
+                    "insert": (x, y),   # posisi asli tetap
+                    "rotation": rotation
                 })
                 continue
 
+            # --- HP UNCOVER ---
             elif layer_name == "HP_UNCOVER":
+                rotation = 0.0
+                if homepass_lines:
+                    hp_point = Point(x, y)
+                    nearest_line = min(homepass_lines, key=lambda l: l.distance(hp_point))
+                    rotation = longest_segment_angle(list(nearest_line.coords))
+
                 msp.add_text(obj["name"], dxfattribs={
-                    "height": 6.0,
+                    "height": 3.0,
                     "layer": "FEATURE_LABEL",
                     "color": 7,
-                    "insert": (x - 2.2, y - 0.9),
-                    "rotation": 0
+                    "insert": (x, y),   # posisi asli tetap
+                    "rotation": rotation
                 })
                 continue
 
+            # --- Lainnya (FAT, FDT, POLE, dsb) ---
             block_name = None
             matchblock = None
 
@@ -248,17 +298,14 @@ def draw_to_template(classified, template_path):
             if not inserted_block:
                 msp.add_circle(center=(x, y), radius=2, dxfattribs={"layer": true_layer})
 
+            # Tambah teks untuk FDT/FAT/POLE
             if layer_name != "FDT":
                 text_layer = "FEATURE_LABEL" if obj['folder'] in [
                     "NEW POLE 7-3", "NEW POLE 7-4", "EXISTING POLE EMR 7-4", "EXISTING POLE EMR 7-3"
                 ] else true_layer
 
                 text_color = 1 if text_layer == "FEATURE_LABEL" else 256
-
-                if layer_name in ["FDT", "FAT", "NEW_POLE", "EXISTING_POLE"]:
-                    text_height = 5.0
-                else:
-                    text_height = 1.5
+                text_height = 3.0 if layer_name in ["FDT", "FAT", "NEW_POLE", "EXISTING_POLE"] else 1.5
 
                 msp.add_text(obj["name"], dxfattribs={
                     "height": text_height,
@@ -268,6 +315,8 @@ def draw_to_template(classified, template_path):
                 })
 
     return doc
+
+
 
 def run_kmz_to_dwg():
     st.title("🏗️ KMZ → AUTOCAD ")
@@ -304,6 +353,3 @@ def run_kmz_to_dwg():
                         st.download_button("⬇️ Download DXF", f, file_name="output_from_kmz.dxf")
             except Exception as e:
                 st.error(f"❌ Gagal memproses: {e}")
-
-
-
