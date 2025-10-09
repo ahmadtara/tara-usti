@@ -110,11 +110,15 @@ def run_hpdb(HERE_API_KEY):
     if kmz_file and template_file:
         kmz_bytes = kmz_file.read()
         placemarks = extract_placemarks(kmz_bytes)
-        df = pd.read_excel(template_file)
+
+        df = pd.read_excel(template_file, sheet_name="Homepass Database")
+        expected_cols = ["FDT Tray (Front)", "FDT Port", "Tube Colour", "Core Number"]
+        mapping_df = df[expected_cols].dropna(how="all").reset_index(drop=True)
 
         fat = placemarks["FAT"]
         hp = placemarks["HP COVER"]
         fdt = placemarks["FDT"]
+
         all_poles = (
             placemarks["NEW POLE 7-3"]
             + placemarks["NEW POLE 7-4"]
@@ -124,16 +128,16 @@ def run_hpdb(HERE_API_KEY):
             + placemarks["EXISTING POLE EMR 9-4"]
         )
 
+
         rc = reverse_here(fdt[0]["lat"], fdt[0]["lon"]) if fdt else {"district": "", "subdistrict": "", "postalcode": "", "street": ""}
         fdtcode = fdt[0]["name"].strip().upper() if fdt else "UNKNOWN"
         oltcode = "UNKNOWN"
 
-        # Ambil OLT Code dari Description FDT
         if fdt:
             with zipfile.ZipFile(BytesIO(kmz_bytes)) as z:
                 f = [f for f in z.namelist() if f.lower().endswith(".kml")][0]
-                tree = ET.parse(z.open(f))
-                root = tree.getroot()
+                parser = etree.XMLParser(recover=True)
+                root = etree.parse(z.open(f), parser=parser).getroot()
                 ns = {"kml": "http://www.opengis.net/kml/2.2"}
                 for pm in root.findall(".//kml:Placemark", ns):
                     name_el = pm.find("kml:name", ns)
@@ -146,16 +150,23 @@ def run_hpdb(HERE_API_KEY):
         progress = st.progress(0)
         total = len(hp)
 
-        for col in ["block", "homenumber", "fdtcode", "oltcode", "fatcode", "FAT ID", "Pole ID", "Pole Latitude", "Pole Longitude", "FAT Address"]:
+        must_cols = [
+            "block", "homenumber", "fdtcode", "oltcode", "fatcode",
+            "Latitude_homepass", "Longitude_homepass", "district", "subdistrict", "postalcode",
+            "FAT ID", "Pole ID", "Pole Latitude", "Pole Longitude", "FAT Address",
+            "Line", "Capacity", "FAT Port",
+            "FDT Tray (Front)", "FDT Port", "Tube Colour", "Core Number"
+        ]
+        for col in must_cols:
             if col not in df.columns:
                 df[col] = ""
 
         for i, h in enumerate(hp):
-            if i >= len(df): break
+            if i >= len(df):
+                break
             fc = extract_fatcode(h["path"])
             df.at[i, "fatcode"] = fc
 
-            # Pisahkan nama jadi blok & nomor rumah
             name_parts = h["name"].split(".")
             if len(name_parts) == 2 and name_parts[0].isalnum() and name_parts[1].isdigit():
                 df.at[i, "block"] = name_parts[0].strip().upper()
@@ -175,12 +186,11 @@ def run_hpdb(HERE_API_KEY):
             hh = reverse_here(h["lat"], h["lon"])
             df.at[i, "street"] = hh["street"].replace("JALAN ", "").strip()
 
-            # ====== FAT ID & POLE (pakai nearest pole) ======
             mf = next((x for x in fat if fc in x["name"]), None)
             if mf:
                 df.at[i, "FAT ID"] = mf["name"]
                 df.at[i, "FAT Address"] = reverse_here(mf["lat"], mf["lon"])["street"]
-
+            
                 nearest_pole = find_nearest_pole(mf, all_poles)
                 if nearest_pole:
                     df.at[i, "Pole ID"] = nearest_pole["name"]
@@ -195,11 +205,138 @@ def run_hpdb(HERE_API_KEY):
                 df.at[i, "Pole ID"] = "POLE_NOT_FOUND"
                 df.at[i, "FAT Address"] = ""
 
-            progress.progress(int((i + 1) * 100 / total))
+
+            progress.progress(int((i + 1) * 100 / max(1, len(hp))))
+
+        # ====== AUTO FILL FAT PORT ======
+        for fat_id, group in df.groupby("FAT ID", sort=False):
+            if fat_id == "" or fat_id == "FAT_NOT_FOUND":
+                continue
+            for i, idx in enumerate(group.index, start=1):
+                df.at[idx, "FAT Port"] = i
+
+        # ====== AUTO FILL LINE & CAPACITY PER FAT ID ======
+        for fat_id, group in df.groupby("FAT ID", sort=False):
+            if fat_id == "" or fat_id == "FAT_NOT_FOUND":
+                continue
+            fatcodes = group["fatcode"].dropna().unique()
+            if len(fatcodes) == 0:
+                continue
+            fc = fatcodes[0]
+            letter = fc[0] if fc and fc[0] in "ABCD" else ""
+            try:
+                nums = [int(x[1:]) for x in fatcodes if len(x) >= 2]
+                max_num = max(nums) if nums else 0
+            except:
+                max_num = 0
+
+            if 1 <= max_num <= 10:
+                cap_val = "24C/2T"
+            elif 11 <= max_num <= 15:
+                cap_val = "36C/3T"
+            elif 16 <= max_num <= 20:
+                cap_val = "48C/4T"
+            else:
+                cap_val = ""
+
+            first_idx = group.index[0]
+            df.at[first_idx, "Line"] = ("LINE  " + letter) if letter else ""
+            df.at[first_idx, "Capacity"] = cap_val
+
+        # ====== FINAL: ASSIGN FDT Tray, FDT Port, Tube Colour, Core Number
+        # Logic that matches contoh.xlsx exactly:
+        # - port/tray are GLOBAL (port 1..10 -> then tray++)
+        # - tube/core RESET when Line changes (tube:1..n; core 1..10)
+        # - for each FAT ID: first row (FAT Port==1) -> write Tray & Port & Tube & Core(odd)
+        #                  second row (FAT Port==2) -> write Tube & Core(even)
+        # Note: we infer Line per FAT ID by taking any non-null 'Line' in the group and if missing,
+        #       inherit previous line (same behavior as contoh).
+        import numpy as np
+
+        # Ensure FAT Port numeric
+        if "FAT Port" in df.columns:
+            df['FAT Port'] = pd.to_numeric(df['FAT Port'], errors='coerce').fillna(0).astype(int)
+
+        # Ensure FDT columns exist & cleared
+        for col in ["FDT Tray (Front)", "FDT Port", "Tube Colour", "Core Number"]:
+            if col not in df.columns:
+                df[col] = np.nan
+            else:
+                # clear previous values to avoid partial leftover
+                df[col] = np.nan
+
+        # Build FAT ID -> Line mapping (inherit previous if missing)
+        fat_line = {}
+        prev_line = None
+        for fat_id, group in df.groupby('FAT ID', sort=False):
+            nonnull_lines = group['Line'].dropna().unique()
+            if len(nonnull_lines) > 0:
+                line_val = nonnull_lines[0]
+                prev_line = line_val
+            else:
+                line_val = prev_line
+            fat_line[fat_id] = line_val
+
+        # Global port/tray counters; tube/core reset when Line changes
+        current_tray = 1
+        current_port = 1
+        current_tube = 1
+        current_core = 1
+        prev_line = None
+
+        # Process FAT IDs in appearance order
+        for fat in df['FAT ID'].drop_duplicates():
+            if not fat or fat == "FAT_NOT_FOUND":
+                continue
+
+            line = fat_line.get(fat, None)
+            # If line changed, reset tube/core but NOT tray/port (tray/port are global)
+            if line != prev_line:
+                current_tube = 1
+                current_core = 1
+                prev_line = line
+
+            grp = df[df['FAT ID'] == fat]
+            if grp.empty:
+                continue
+            # pick first and second rows (prefer rows where FAT Port == 1/2)
+            first_candidates = grp.index[grp['FAT Port'] == 1]
+            if len(first_candidates) > 0:
+                idx_first = first_candidates[0]
+            else:
+                idx_first = grp.index[0]
+            second_candidates = grp.index[grp['FAT Port'] == 2]
+            if len(second_candidates) > 0:
+                idx_second = second_candidates[0]
+            else:
+                idx_second = grp.index[1] if len(grp) > 1 else None
+                
+            # Assign first row: Tray, Port, Tube, Core(odd)
+            df.at[idx_first, "FDT Tray (Front)"] = current_tray
+            df.at[idx_first, "FDT Port"] = current_port
+            df.at[idx_first, "Tube Colour"] = current_tube
+            df.at[idx_first, "Core Number"] = current_core
+
+            # Assign second row: Tube, Core(even) only (leave Tray/Port blank)
+            if idx_second is not None:
+                df.at[idx_second, "Tube Colour"] = current_tube
+                df.at[idx_second, "Core Number"] = current_core + 1
+
+            # increment core & tube (tube increments after core wraps beyond 10)
+            current_core += 2
+            if current_core > 10:
+                current_core -= 10
+                current_tube += 1
+
+            # increment global port/tray
+            current_port += 1
+            if current_port > 10:
+                current_port = 1
+                current_tray += 1
 
         progress.empty()
-        st.success("✅ Selesai! Pole ID sekarang pakai logika nearest pole (bukan exact match).")
-        st.dataframe(df.head(10))
+        st.success("✅ Selesai! (logika FDT Tray/Port/Tube/Core sudah disesuaikan seperti contoh.xlsx)")
+        st.dataframe(df.head(60))
         buf = BytesIO()
         df.to_excel(buf, index=False)
         st.download_button("📥 Download Hasil", buf.getvalue(), file_name="hasil_hpdb.xlsx")
