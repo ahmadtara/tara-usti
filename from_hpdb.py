@@ -4,6 +4,7 @@ import zipfile
 import xml.etree.ElementTree as ET
 from io import BytesIO
 import requests
+import math
 
 def run_hpdb(HERE_API_KEY):
 
@@ -17,8 +18,6 @@ def run_hpdb(HERE_API_KEY):
 4️⃣ OLT CODE agar otomatis, di dalam Description FDT wajib diisi kode OLT.<br>
 5️⃣ Street tidak semua bisa terisi otomatis karena ada beberapa jalan di maps bertanda unnamed road.
 """, unsafe_allow_html=True)
-    # st.markdown("<h2 style='font-weight: normal;'>Hai, <b>{}</b>👋 <br> ✅CATATAN PENTING : <br> 1. TEMPLATE XLSX HARUS DI SESUAIKAN JUMLAHNYA DENGAN TOTAL HOMEPASS DARI KMZ <br> 2. BLOCK AGAR TERPISAH OTOMATIS HARUS PAKAI TITIK, CONTOH B.1 DAN A.1 <br> 3. Fitur Otomatis = FAT ID, Pole ID, Pole Latitude, Pole Longitude, Clustername, street, homenumber, oltcode, fdtcode, fatcode, Latitude_homepass, Longitude_homepass <br> 4. OLT CODE agar otomatis didalam Description FDT wajib di isi kode OLT <br> 5. Street tidak semua nya dapat terisi otomatis, krena ada beberapa jalan di maps unnamed road </h3>".format(st.session_state.get("user", "User")), unsafe_allow_html=True)
-
 
     if st.button("🔒 Logout"):
         st.session_state["logged_in"] = False
@@ -28,6 +27,9 @@ def run_hpdb(HERE_API_KEY):
     kmz_file = st.file_uploader("Upload file .KMZ", type=["kmz"])
     template_file = st.file_uploader("Upload TEMPLATE HPDB (.xlsx)", type=["xlsx"])
 
+    # ------------------------------
+    # Extract placemarks dari KMZ
+    # ------------------------------
     def extract_placemarks(kmz_bytes):
         def recurse_folder(folder, ns, path=""):
             items = []
@@ -56,7 +58,12 @@ def run_hpdb(HERE_API_KEY):
             all_pm = []
             for folder in root.findall(".//kml:Folder", ns):
                 all_pm += recurse_folder(folder, ns)
-            data = {k: [] for k in ["FAT", "NEW POLE 7-3", "EXISTING POLE EMR 7-3", "EXISTING POLE EMR 7-4", "FDT", "HP COVER"]}
+            data = {k: [] for k in [
+                "FAT",
+                "NEW POLE 7-3", "NEW POLE 7-4", "NEW POLE 9-4",
+                "EXISTING POLE EMR 7-3", "EXISTING POLE EMR 7-4", "EXISTING POLE EMR 9-4",
+                "FDT", "HP COVER"
+            ]}
             for p in all_pm:
                 for k in data:
                     if k in p["path"]:
@@ -64,11 +71,25 @@ def run_hpdb(HERE_API_KEY):
                         break
             return data
 
+    # ------------------------------
+    # Helper functions
+    # ------------------------------
     def extract_fatcode(path):
         for part in path.split("/"):
             if len(part) == 3 and part[0] in "ABCD" and part[1:].isdigit():
                 return part
         return "UNKNOWN"
+
+    def find_nearest_pole(fat, poles):
+        fx, fy = fat["lat"], fat["lon"]
+        nearest = None
+        min_dist = float("inf")
+        for p in poles:
+            dist = math.hypot(p["lat"] - fx, p["lon"] - fy)
+            if dist < min_dist:
+                min_dist = dist
+                nearest = p
+        return nearest
 
     def reverse_here(lat, lon):
         url = f"https://revgeocode.search.hereapi.com/v1/revgeocode?at={lat},{lon}&apikey={HERE_API_KEY}&lang=en-US"
@@ -83,19 +104,31 @@ def run_hpdb(HERE_API_KEY):
             }
         return {"district": "", "subdistrict": "", "postalcode": "", "street": ""}
 
+    # ------------------------------
+    # Proses utama
+    # ------------------------------
     if kmz_file and template_file:
         kmz_bytes = kmz_file.read()
         placemarks = extract_placemarks(kmz_bytes)
         df = pd.read_excel(template_file)
+
         fat = placemarks["FAT"]
         hp = placemarks["HP COVER"]
         fdt = placemarks["FDT"]
-        all_poles = placemarks["NEW POLE 7-3"] + placemarks["EXISTING POLE EMR 7-3"] + placemarks["EXISTING POLE EMR 7-4"]
+        all_poles = (
+            placemarks["NEW POLE 7-3"]
+            + placemarks["NEW POLE 7-4"]
+            + placemarks["NEW POLE 9-4"]
+            + placemarks["EXISTING POLE EMR 7-3"]
+            + placemarks["EXISTING POLE EMR 7-4"]
+            + placemarks["EXISTING POLE EMR 9-4"]
+        )
 
         rc = reverse_here(fdt[0]["lat"], fdt[0]["lon"]) if fdt else {"district": "", "subdistrict": "", "postalcode": "", "street": ""}
         fdtcode = fdt[0]["name"].strip().upper() if fdt else "UNKNOWN"
         oltcode = "UNKNOWN"
 
+        # Ambil OLT Code dari Description FDT
         if fdt:
             with zipfile.ZipFile(BytesIO(kmz_bytes)) as z:
                 f = [f for f in z.namelist() if f.lower().endswith(".kml")][0]
@@ -113,7 +146,7 @@ def run_hpdb(HERE_API_KEY):
         progress = st.progress(0)
         total = len(hp)
 
-        for col in ["block", "homenumber", "fdtcode", "oltcode"]:
+        for col in ["block", "homenumber", "fdtcode", "oltcode", "fatcode", "FAT ID", "Pole ID", "Pole Latitude", "Pole Longitude", "FAT Address"]:
             if col not in df.columns:
                 df[col] = ""
 
@@ -121,6 +154,8 @@ def run_hpdb(HERE_API_KEY):
             if i >= len(df): break
             fc = extract_fatcode(h["path"])
             df.at[i, "fatcode"] = fc
+
+            # Pisahkan nama jadi blok & nomor rumah
             name_parts = h["name"].split(".")
             if len(name_parts) == 2 and name_parts[0].isalnum() and name_parts[1].isdigit():
                 df.at[i, "block"] = name_parts[0].strip().upper()
@@ -128,6 +163,7 @@ def run_hpdb(HERE_API_KEY):
             else:
                 df.at[i, "block"] = ""
                 df.at[i, "homenumber"] = h["name"]
+
             df.at[i, "Latitude_homepass"] = h["lat"]
             df.at[i, "Longitude_homepass"] = h["lon"]
             df.at[i, "district"] = rc["district"]
@@ -135,31 +171,35 @@ def run_hpdb(HERE_API_KEY):
             df.at[i, "postalcode"] = rc["postalcode"]
             df.at[i, "fdtcode"] = fdtcode
             df.at[i, "oltcode"] = oltcode
+
             hh = reverse_here(h["lat"], h["lon"])
             df.at[i, "street"] = hh["street"].replace("JALAN ", "").strip()
+
+            # ====== FAT ID & POLE (pakai nearest pole) ======
             mf = next((x for x in fat if fc in x["name"]), None)
             if mf:
                 df.at[i, "FAT ID"] = mf["name"]
-                df.at[i, "Pole Latitude"] = mf["lat"]
-                df.at[i, "Pole Longitude"] = mf["lon"]
-                pol = next((p["name"] for p in all_poles if abs(p["lat"] - mf["lat"]) < 1e-4 and abs(p["lon"] - mf["lon"]) < 1e-4), "POLE_NOT_FOUND")
-                df.at[i, "Pole ID"] = pol
-                fataddr = reverse_here(mf["lat"], mf["lon"])["street"]
-                df.at[i, "FAT Address"] = fataddr
+                df.at[i, "FAT Address"] = reverse_here(mf["lat"], mf["lon"])["street"]
+
+                nearest_pole = find_nearest_pole(mf, all_poles)
+                if nearest_pole:
+                    df.at[i, "Pole ID"] = nearest_pole["name"]
+                    df.at[i, "Pole Latitude"] = nearest_pole["lat"]
+                    df.at[i, "Pole Longitude"] = nearest_pole["lon"]
+                else:
+                    df.at[i, "Pole ID"] = "POLE_NOT_FOUND"
+                    df.at[i, "Pole Latitude"] = ""
+                    df.at[i, "Pole Longitude"] = ""
             else:
                 df.at[i, "FAT ID"] = "FAT_NOT_FOUND"
                 df.at[i, "Pole ID"] = "POLE_NOT_FOUND"
                 df.at[i, "FAT Address"] = ""
+
             progress.progress(int((i + 1) * 100 / total))
 
         progress.empty()
-        st.success("✅ Selesai!")
+        st.success("✅ Selesai! Pole ID sekarang pakai logika nearest pole (bukan exact match).")
         st.dataframe(df.head(10))
         buf = BytesIO()
         df.to_excel(buf, index=False)
         st.download_button("📥 Download Hasil", buf.getvalue(), file_name="hasil_hpdb.xlsx")
-
-
-
-
-
