@@ -112,8 +112,9 @@ def run_hpdb(HERE_API_KEY):
     # ------------------------------
     def extract_fatcode(path):
         for part in path.split("/"):
-            if len(part) == 3 and part[0] in "ABCD" and part[1:].isdigit():
-                return part
+            p = part.strip().upper()
+            if len(p) >= 3 and p[0] in "ABCD" and p[1:].isdigit():
+                return p
         return "UNKNOWN"
 
     def find_nearest_pole(fat, poles):
@@ -441,3 +442,4 @@ def run_hpdb(HERE_API_KEY):
         buf = BytesIO()
         df.to_excel(buf, index=False)
         st.download_button("📥 Download Hasil", buf.getvalue(), file_name="hasil_hpdb.xlsx")
+
